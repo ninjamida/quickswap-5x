@@ -43,3 +43,9 @@ two IFSes. It works correctly for color swaps from one IFS to the other just as
 it does with color swaps on the same IFS. QuickSwap does not, however, have any
 special functionality to take advantage of the presence of multiple IFSes - like
 core Z-Mod itself, it just treats the jacker as a single, large IFS.
+
+Debug mode, add to user.cfg as follows. This will cause the generated GCode to
+be written to a file, and not executed, with the default filament change gcode
+being actually executed instead.
+[quickswap]
+debug: 1

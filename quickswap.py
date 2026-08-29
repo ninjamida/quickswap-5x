@@ -14,10 +14,12 @@ class QuickSwap:
         self.print_stats = None # Filled during _handle_ready
         
         self.silent = config.getint('silent', 0)
+        self.debug = config.getint('debug', 0)
         
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
         
         self.gcode.register_command('_QS_CHANGE_FILAMENT', self.cmd_QS_CHANGE_FILAMENT)
+        self.gcode.register_command('_QS_WAIT_IFS_IDLE', self.cmd_QS_WAIT_IFS_IDLE)
         
         client_vars = self.gcode.macros.get('_CLIENT_VARIABLE').variables
         cut_vars = self.gcode.macros.get('_CUT_PRUTOK').variables
@@ -53,10 +55,24 @@ class QuickSwap:
         self.save_variables = self.printer.lookup_object('save_variables')
         self.print_stats = self.printer.lookup_object('print_stats')
         
+    def cmd_QS_WAIT_IFS_IDLE(self, gcmd):
+        if self.zmod_ifs.ifs:
+            if self.zmod_ifs.ifs_data.State != 5:
+                if self.silent == 0:
+                    self.gcode.respond_info('QuickSwap: Waiting for IFS to be idle')
+                self.zmod_ifs.wait_for_state(FFS_state=5)
+        
     def cmd_QS_CHANGE_FILAMENT(self, gcmd):
         try:
+            cmds = []
             channel = gcmd.get_int('channel', 0)
-            self._quickswap_filament(gcmd)
+            self._generate_quickswap_filament_gcode(channel, cmds)
+            if self.debug == 0:
+                self.gcode.run_script_from_command('\n'.join(cmds))
+            else:
+                with open('/usr/data/config/mod_data/quickswap_debug.txt', 'w') as f:
+                    f.write('\n'.join(cmds))
+                self.gcode.run_script_from_command(f'_QS_ORIG_A_CHANGE_FILAMENT CHANNEL={channel} RESTORE_POSITION=1 RESTORE_TEMP=1')
         except Exception as e:
             if self.lang == 'ru':
                 msg = f"!! (QuickSwap) Ошибка при смене филамента: {str(e)}\nВстаю на паузу"
@@ -73,16 +89,16 @@ class QuickSwap:
             pause_resume.send_pause_command()
             self.gcode.run_script_from_command("PAUSE\nM400\n")
             
-    def info(self, msg, level=0):
+    def info(self, msg, cmds, level=0):
         if self.silent <= level:
-            self.gcode.respond_info(f'QuickSwap: {msg}')
+            cmds += [f"RESPOND MSG='QuickSwap: {msg}'"]
 
-    def _quickswap_filament(self, unmapped_target_channel):        
+    def _generate_quickswap_filament_gcode(self, unmapped_target_channel, cmds):        
         status = self.gcode_move.get_status(self.reactor.now())
         old_channel = self.zmod_ifs.get_current_channel_from_config()
         target_channel = _qs_get_filament_mapping(unmapped_target_channel)
         
-        self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', 1)
+        self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, 1)
         
         nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0
         layer_num = self.print_stats.get_status(self.reactor.now()).get('info', {}).get('current_layer', 1)
@@ -92,47 +108,47 @@ class QuickSwap:
         old_filament_info = self.zmod_ifs.get_prutok_config(old_channel)
         new_filament_info = self.zmod_ifs.get_prutok_config(target_channel)        
         
-        self.gcode.run_script_from_command("SAVE_GCODE_STATE NAME=qs_change_filament")
-        self.gcode.run_script_from_command("_DISABLE_SENSOR")
-        self.gcode.run_script_from_command("G90") # Absolute
-        self.gcode.run_script_from_command("M83") # Relative extruder
+        cmds += ["SAVE_GCODE_STATE NAME=qs_change_filament"]
+        cmds += ["_DISABLE_SENSOR"]
+        cmds += ["G90"] # Absolute
+        cmds += ["M83"] # Relative extruder
         
-        self._qsf_move_to_cutter(status, initial_pos, old_channel, old_filament_info)
+        self._qsf_move_to_cutter(status, initial_pos, old_channel, old_filament_info, cmds)
         
-        self.gcode.run_script_from_command(f"G1 X{self.cut_x} F{self.cut_move_speed}")
+        cmds += [f"G1 X{self.cut_x} F{self.cut_move_speed}"]
         
         if nopoop and layer_num > 1:
-            self._qsf_return_to_print(initial_pos)
+            self._qsf_return_to_print(initial_pos, cmds)
         else:
-            self._qsf_move_from_cutter_to_trash()
+            self._qsf_move_from_cutter_to_trash(cmds)
         
-        self.gcode.run_script("M400")
-        self.zmod_ifs.wait_for_state(FFS_state=5)
+        cmds += ["M400"]
+        cmds += ["_QS_WAIT_IFS_IDLE"]
         
-        self._qsf_unload_old_filament(old_channel, old_filament_info)
+        self._qsf_unload_old_filament(old_channel, old_filament_info, cmds)
         
-        self._qsf_load_new_filament(old_filament_info, target_channel, new_filament_info)
-        self.gcode.run_script_from_command("_ENABLE_SENSOR")
+        self._qsf_load_new_filament(old_filament_info, target_channel, new_filament_info, cmds)
         
         if nopoop:
             if layer_num > 1:
-                self._qsf_nopoop_wipe()
+                self._qsf_nopoop_wipe(cmds)
             else:
-                self.gcode.run_script_from_command("_SBROS_TRASH")
-                self.gcode.run_script_from_command("_CLEAR_REZINA")
-                self.gcode.run_script_from_command(f"G1 X{initial_pos[0]} Y{initial_pos[1]} F{self.travel_move_speed}")
-                self.gcode.run_script_from_command(f"G1 Z{initial_pos[2]} F{self.z_travel_move_speed}")
+                cmds += ["_SBROS_TRASH"]
+                cmds += ["_CLEAR_REZINA"]
+                cmds += [f"G1 X{initial_pos[0]} Y{initial_pos[1]} F{self.travel_move_speed}"]
+                cmds += [f"G1 Z{initial_pos[2]} F{self.z_travel_move_speed}"]
             
-        self.gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=qs_change_filament MOVE=0")
-        self.gcode.run_script_from_command("SDCARD_CLEAR_REFUELLING")
-        self.gcode.run_script_from_command("IFS_MOTION_ON")
-        self.gcode.run_script_from_command("IFS_SWITCH_ON")
-        self.info(f'Filament change complete', 1)
+        cmds += ["RESTORE_GCODE_STATE NAME=qs_change_filament MOVE=0"]
+        cmds += ["SDCARD_CLEAR_REFUELLING"]
+        cmds += ["_ENABLE_SENSOR"]
+        cmds += ["IFS_MOTION_ON"]
+        cmds += ["IFS_SWITCH_ON"]
+        self.info(f'Filament change complete', cmds, 1)
         
         
-    def _qsf_move_to_cutter(self, status, initial_pos, old_channel, old_filament_info):
+    def _qsf_move_to_cutter(self, status, initial_pos, old_channel, old_filament_info, cmds):
         # Move to cutter while simultaneously performing unload before cut
-        self.info(f'Moving to cutter')
+        self.info(f'Moving to cutter', cmds)
         
         moves_to_cutter = self._get_moves_to_cutter(initial_pos)
         total_duration = sum(move[-1] for move in moves_to_cutter)
@@ -161,7 +177,7 @@ class QuickSwap:
                 extruder_move = 0
                 extruder_move_time = 0
                 if not done_ifs_grab:
-                    self.gcode.run_script_from_command(f"IFS_F24 PRUTOK={old_channel} WAIT=0")
+                    cmds += [f"IFS_F24 PRUTOK={old_channel} WAIT=0"]
                     done_ifs_grab = True
             elif remaining_withdraw_duration >= move[4]:
                 extruder_move = move[4] * (extruder_speed / 60)
@@ -171,24 +187,24 @@ class QuickSwap:
                 extruder_move_time = remaining_withdraw_duration
                 
             if extruder_move_time <= 0:
-                self.gcode.run_script_from_command(f"G1 X{new_x} Y{new_y} Z{new_z} F{move[3]}")
+                cmds += [f"G1 X{new_x} Y{new_y} Z{new_z} F{move[3]}"]
             elif extruder_move_time == move[4]:
-                self.gcode.run_script_from_command(f"G1 X{new_x} Y{new_y} Z{new_z} E{-extruder_move} F{move[3]}")
+                cmds += [f"G1 X{new_x} Y{new_y} Z{new_z} E{-extruder_move} F{move[3]}"]
             else:
                 split_point = self._get_move_split_point(initial_pos, [new_x, new_y, new_z], move[4], extruder_move_time)
-                self.gcode.run_script_from_command(f"G1 X{split_point[0]} Y{split_point[1]} Z{split_point[2]} E{-extruder_move} F{move[3]}")
-                self.gcode.run_script_from_command(f"IFS_F24 PRUTOK={old_channel} WAIT=0")
-                self.gcode.run_script_from_command(f"G1 X{new_x} Y{new_y} Z{new_z} F{move[3]}")
+                cmds += [f"G1 X{split_point[0]} Y{split_point[1]} Z{split_point[2]} E{-extruder_move} F{move[3]}"]
+                cmds += [f"IFS_F24 PRUTOK={old_channel} WAIT=0"]
+                cmds += [f"G1 X{new_x} Y{new_y} Z{new_z} F{move[3]}"]
                 done_ifs_grab = True
             
             internal_pos = [new_x, new_y, new_z]
             
         if remaining_withdraw_duration > 0:
             extruder_move = remaining_withdraw_duration * (extruder_speed / 60)
-            self.gcode.run_script_from_command(f"G1 E{-extruder_move} F{extruder_speed}")
+            cmds += [f"G1 E{-extruder_move} F{extruder_speed}"]
             
         if not done_ifs_grab:
-            self.gcode.run_script_from_command(f"IFS_F24 PRUTOK={old_channel} WAIT=0")
+            cmds += [f"IFS_F24 PRUTOK={old_channel} WAIT=0"]
             
     def _get_move_split_point(self, initial_pos, new_pos, move_duration, split_duration):
         factor = split_duration / move_duration
@@ -233,94 +249,93 @@ class QuickSwap:
             result += [move + [distance / (move[3] / 60)]]
         return result
         
-    def _qsf_move_from_cutter_to_trash(self):
-        self.info(f'Moving to trash chute')
-        self.gcode.run_script_from_command(f"G1 X{self.cut_prepare_x} F{self.cut_move_speed}")
-        self.gcode.run_script_from_command(f"G1 Y{self.y_front} F{self.travel_move_speed}")
-        self.gcode.run_script_from_command(f"G1 X{self.x_left} F{self.travel_move_speed}")
-        self.gcode.run_script_from_command(f"G1 Y{self.y_back} F{self.travel_move_speed}")
-        self.gcode.run_script_from_command(f"G1 X{self.trash_x} F{self.travel_move_speed}")
-        self.gcode.run_script_from_command(f"G1 Y{self.trash_y} F{self.enter_trash_move_speed}")
+    def _qsf_move_from_cutter_to_trash(self, cmds):
+        self.info(f'Moving to trash chute', cmds)
+        cmds += [f"G1 X{self.cut_prepare_x} F{self.cut_move_speed}"]
+        cmds += [f"G1 Y{self.y_front} F{self.travel_move_speed}"]
+        cmds += [f"G1 X{self.x_left} F{self.travel_move_speed}"]
+        cmds += [f"G1 Y{self.y_back} F{self.travel_move_speed}"]
+        cmds += [f"G1 X{self.trash_x} F{self.travel_move_speed}"]
+        cmds += [f"G1 Y{self.trash_y} F{self.enter_trash_move_speed}"]
         
-    def _qsf_return_to_print(self, initial_pos):
-        self.info(f'Returning to print')
+    def _qsf_return_to_print(self, initial_pos, cmds):
+        self.info(f'Returning to print', cmds)
         relative_to_center_x = current_pos[0] - self.x_center
         relative_to_center_y = current_pos[1] - self.y_center
         closer_on_x = math.abs(relative_to_center_x) > math.abs(relative_to_center_y)
         
-        self.gcode.run_script_from_command(f"G1 X{self.cut_prepare_x} F{self.cut_move_speed}")
-        self.gcode.run_script_from_command(f"G1 Y{self.y_front} F{self.travel_move_speed}")
+        cmds += [f"G1 X{self.cut_prepare_x} F{self.cut_move_speed}"]
+        cmds += [f"G1 Y{self.y_front} F{self.travel_move_speed}"]
         
         if closer_on_x or relative_to_center_y > 0:
             if relative_to_center_x <= 0:
-                self.gcode.run_script_from_command("G1 X{self.x_left} F{self.travel_move_speed}")
+                cmds += ["G1 X{self.x_left} F{self.travel_move_speed}"]
             else:
-                self.gcode.run_script_from_command("G1 X{self.x_right} F{self.travel_move_speed}")
+                cmds += ["G1 X{self.x_right} F{self.travel_move_speed}"]
             
             if closer_on_x:
-                self.gcode.run_script_from_command("G1 Y{initial_pos[1]} F{self.travel_move_speed}")
+                cmds += ["G1 Y{initial_pos[1]} F{self.travel_move_speed}"]
             else:
-                self.gcode.run_script_from_command("G1 Y{self.y_back} F{self.travel_move_speed}")
+                cmds += ["G1 Y{self.y_back} F{self.travel_move_speed}"]
             
-        self.gcode.run_script_from_command("G1 X{initial_pos[0]} F{self.travel_move_speed}")
+        cmds += ["G1 X{initial_pos[0]} F{self.travel_move_speed}"]
             
         if not closer_on_x:
-            self.gcode.run_script_from_command("G1 Y{initial_pos[1]} F{self.travel_move_speed}")
+            cmds += ["G1 Y{initial_pos[1]} F{self.travel_move_speed}"]
             
-        self.gcode.run_script_from_command("G1 Z{initial_pos[2]} F{self.z_travel_move_speed}")
+        cmds += ["G1 Z{initial_pos[2]} F{self.z_travel_move_speed}"]
         
     
-    def _qsf_unload_old_filament(self, old_channel, old_filament_info):
-        self.info(f'Unloading channel {old_channel}')
+    def _qsf_unload_old_filament(self, old_channel, old_filament_info, cmds):
+        self.info(f'Unloading channel {old_channel}', cmds)
         
         unload_distance = old_filament_info['filament_unload_after_cutting'] + old_filament_info['nozzle_cleaning_length']
         
         speed_factor = float(self.gcode_move.get_status(self.reactor.now()).get('speed_factor', 1.0))
         
-        self.gcode.run_script_from_command(f"IFS_F11 PRUTOK={old_channel} LEN={unload_distance} SPEED={old_filament_info['filament_extruder_speed'] * speed_factor} WAIT=0")
         self.gcode.run_script_from_command(f"G1 E{-unload_distance} F{old_filament_info['filament_extruder_speed']}
-        self.gcode.run_script("M400")
-        self.zmod_ifs.wait_for_state(FFS_state=5)
+        cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={unload_distance} SPEED={old_filament_info['filament_extruder_speed'] * speed_factor} WAIT=0"]
+        cmds += ["_QS_WAIT_IFS_IDLE"]
         
-        self.gcode.run_script(f"IFS_F11 PRUTOK={old_channel} LEN={old_filament_info['filament_unload_into_tube']} SPEED={old_filament_info['filament_ifs_speed'] * speed_factor}")
+        cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={old_filament_info['filament_unload_into_tube']} SPEED={old_filament_info['filament_ifs_speed'] * speed_factor}"]
         
-    def _qsf_load_new_filament(self, old_filament_info, new_channel, new_filament_info):
-        self.info(f'Loading channel {new_channel}')
+    def _qsf_load_new_filament(self, old_filament_info, new_channel, new_filament_info, cmds):
+        self.info(f'Loading channel {new_channel}', cmds)
         
         speed_factor = float(self.gcode_move.get_status(self.reactor.now()).get('speed_factor', 1.0))
         
-        self.gcode.run_script_from_command(f"IFS_F24 PRUTOK={new_channel} WAIT=1")
-        self.gcode.run_script_from_command(f"IFS_F10 PRUTOK={new_channel} LEN={new_filament_info['filament_tube_length']} SPEED={new_filament_info['filament_ifs_speed'] * speed_factor} CHECK=1")
-        self.gcode.run_script("M400")
+        cmds += [f"IFS_F24 PRUTOK={new_channel} WAIT=1"]
+        cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={new_filament_info['filament_tube_length']} SPEED={new_filament_info['filament_ifs_speed'] * speed_factor} CHECK=1"]
+        cmds += ["M400"]
         
-        self.gcode.run_script_from_command(f"M104 S{new_filament_info['temp']}")
+        cmds += [f"M104 S{new_filament_info['temp']}"]
         
         insert_length = 12 + old_filament_info['filament_unload_before_cutting']
-        self.gcode.run_script_from_command(f"IFS_F10 PRUTOK={new_channel} LEN={insert_length} SPEED={new_filament_info['filament_extruder_speed'] * speed_factor} WAIT=0 CHECK=0")
-        self.gcode.run_script_from_command(f"G1 E{insert_length} F{new_filament_info['filament_extruder_speed']}")
-        self.gcode.run_script("M400")
+        cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={insert_length} SPEED={new_filament_info['filament_extruder_speed'] * speed_factor} WAIT=0 CHECK=0"]
+        cmds += [f"G1 E{insert_length} F{new_filament_info['filament_extruder_speed']}"]
+        cmds += ["M400"]
         
-        self.zmod_ifs.wait_for_state(FFS_state=5)
-        self.gcode.run_script_from_command(f"IFS_F39 PRUTOK={new_channel}")
-        self.gcode.run_script_from_command(f"_SET_EXTRUDER_SLOT SLOT={new_channel}")
-        self.gcode.run_script_from_command(f"SDCARD_SET_CHANNEL CHANNEL={new_channel}")
-        self.gcode.run_script_from_command("SDCARD_ENABLE_FFM ENABLE=1")
-        self.gcode.run_script("M400")
+        cmds += ["_QS_WAIT_IFS_IDLE"]
+        cmds += [f"IFS_F39 PRUTOK={new_channel}"]
+        cmds += [f"_SET_EXTRUDER_SLOT SLOT={new_channel}"]
+        cmds += [f"SDCARD_SET_CHANNEL CHANNEL={new_channel}"]
+        cmds += ["SDCARD_ENABLE_FFM ENABLE=1"]
+        cmds += ["M400"]
         
-    def _qsf_nopoop_wipe(self):
-        self.info(f'Performing nopoop wipe')
-        self.gcode.run_script_from_command("SAVE_GCODE_STATE NAME=nopoop_flatten")
-        self.gcode.run_script_from_command("G91")
-        self.gcode.run_script_from_command("G1 X0.75 Y0.75 F600")
-        self.gcode.run_script_from_command("G1 X-0.75 Y0.75")
-        self.gcode.run_script_from_command("G1 X-1.5 Y-1.5")
-        self.gcode.run_script_from_command("G1 X1.5 Y-1.5")
-        self.gcode.run_script_from_command("G1 X1.5 Y1.5")
-        self.gcode.run_script_from_command("G1 X-1.5 Y1.5")
-        self.gcode.run_script_from_command("G1 X-1.5 Y-1.5")
-        self.gcode.run_script_from_command("G1 X0.75 Y-0.75")
-        self.gcode.run_script_from_command("G1 X0.75 Y0.75")
-        self.gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=nopoop_flatten")
+    def _qsf_nopoop_wipe(self, cmds):
+        self.info(f'Performing nopoop wipe', cmds)
+        cmds += ["SAVE_GCODE_STATE NAME=nopoop_flatten"]
+        cmds += ["G91"]
+        cmds += ["G1 X0.75 Y0.75 F600"]
+        cmds += ["G1 X-0.75 Y0.75"]
+        cmds += ["G1 X-1.5 Y-1.5"]
+        cmds += ["G1 X1.5 Y-1.5"]
+        cmds += ["G1 X1.5 Y1.5"]
+        cmds += ["G1 X-1.5 Y1.5"]
+        cmds += ["G1 X-1.5 Y-1.5"]
+        cmds += ["G1 X0.75 Y-0.75"]
+        cmds += ["G1 X0.75 Y0.75"]
+        cmds += ["RESTORE_GCODE_STATE NAME=nopoop_flatten"]
     
     def _qs_get_filament_mapping(self, channel):
         with open('/usr/data/config/mod_data/file.json', 'r') as f:
@@ -331,3 +346,6 @@ class QuickSwap:
             return
 
         return mapping[channel]
+        
+def load_config(config):
+    return QuickSwap(config)
