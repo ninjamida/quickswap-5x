@@ -1,10 +1,10 @@
 QuickSwap is a plugin to speed up color changes on AD5X printers running Z-Mod.
 
-Requirements:
-- Z-Mod
-- Nopoop or the Slicer-Controlled Poop profile
-- NOT compatible with native screen
-- NOT compatible with Bambufy / LessWaste
+Compatibility requirements:
+- Native screen must be disabled. Any alternative is fine.
+- Must not be using Bambufy or LessWaste plugins.
+- Must use either Nopoop or Slicer-Controlled Poop.
+- To avoid doubt; compatible with IFS Jacker.
 
 For best results:
 - Set filament_unload_before_cutting to 20
@@ -36,13 +36,6 @@ To hide the console messages, add to user.cfg:
 silent: 2
 # If you instead add silent: 1, you will get a message at the start and end of
 # color changes, but no info during them.
-
-IFS Jacker compatibility:
-QuickSwap is compatible with, and has been tested with, an IFS Jacker running
-two IFSes. It works correctly for color swaps from one IFS to the other just as
-it does with color swaps on the same IFS. QuickSwap does not, however, have any
-special functionality to take advantage of the presence of multiple IFSes - like
-core Z-Mod itself, it just treats the jacker as a single, large IFS.
 
 Debug mode, add to user.cfg as follows. This will cause the generated GCode to
 be written to a file, and not executed, with the default filament change gcode

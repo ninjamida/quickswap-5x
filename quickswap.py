@@ -7,11 +7,11 @@ class QuickSwap:
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode_move = self.printer.lookup_object('gcode_move')
-        self.toolhead = self.printer.lookup_object('toolhead')
         
         self.zmod_ifs = None # Filled during _handle_ready
         self.save_variables = None # Filled during _handle_ready
         self.print_stats = None # Filled during _handle_ready
+        self.toolhead = None # Filled during _handle_ready
         
         self.silent = config.getint('silent', 0)
         self.debug = config.getint('debug', 0)
@@ -20,40 +20,93 @@ class QuickSwap:
         
         self.gcode.register_command('_QS_CHANGE_FILAMENT', self.cmd_QS_CHANGE_FILAMENT)
         self.gcode.register_command('_QS_WAIT_IFS_IDLE', self.cmd_QS_WAIT_IFS_IDLE)
+        self.gcode.register_command('_QS_GENERATE_TEST', self.cmd_QS_GENERATE_TEST)
         
-        client_vars = self.gcode.macros.get('_CLIENT_VARIABLE').variables
-        cut_vars = self.gcode.macros.get('_CUT_PRUTOK').variables
+        # Fill with defaults for now. Load user's actual values in _handle_ready.
+        max_z_velocity = 25.0
         
-        max_z_velocity = getattr(toolhead.kinematics, 'max_z_velocity', 25.0)
+        self.x_left = 0.0
+        self.x_right = 220.0
+        self.y_front = 0.0
+        self.y_back = 220.0
+        self.z_max = 220.0
         
-        self.x_left = client_vars.get('min_x', 0.0)
-        self.x_right = client_vars.get('max_x', 220.0)
-        self.y_front = client_vars.get('min_y', 0.0)
-        self.y_back = client_vars.get('max_y', 220.0)
-        self.z_max = 220 # Hardcoded
+        self.cut_x = -2.5
+        self.cut_prepare_x = 20.0
+        self.cut_prepare_y = -7.5
         
-        self.cut_x = cut_vars.get('x_cut', -2.5)
-        self.cut_prepare_x = 20 # Hardcoded
-        self.cut_prepare_y = cut_vars.get('y_cut', -7.5)
+        self.swap_z_movement = 5.0
         
-        self.swap_z_movement = 5 # Hardcoded
+        self.trash_x = 52.5
+        self.trash_y = 229.0
         
-        self.trash_x = client_vars.get('custom_park_x', 52.5)
-        self.trash_y = client_vars.get('custom_park_y', 229.0)
+        self.travel_move_speed = 30000
+        self.z_travel_move_speed = 1500
+        self.cut_prepare_y_travel_move_speed = 1800
+        self.cut_move_speed = 600
+        self.enter_trash_move_speed = 3000
         
-        self.travel_move_speed = 30000 # Validated against max at runtime
-        self.z_travel_move_speed = math.min(1500, max_z_velocity * 60)
-        self.cut_prepare_y_travel_move_speed = 1800 # Hardcoded
-        self.cut_move_speed = 600 # Hardcoded
-        self.enter_trash_move_speed = 3000 # Hardcoded
-        
-        self.x_center = (x_left + x_right) / 2
-        self.y_center = (y_front + y_back) / 2
+        self.x_center = (self.x_left + self.x_right) / 2
+        self.y_center = (self.y_front + self.y_back) / 2
         
     def _handle_ready(self):
         self.zmod_ifs = self.printer.lookup_object('zmod_ifs')
         self.save_variables = self.printer.lookup_object('save_variables')
         self.print_stats = self.printer.lookup_object('print_stats')
+        self.toolhead = self.printer.lookup_object('toolhead')
+        self._set_vars()
+        self._rename_macro('_A_CHANGE_FILAMENT', '_QS_ORIG_A_CHANGE_FILAMENT')
+        self._rename_macro('_QS_A_CHANGE_FILAMENT', '_A_CHANGE_FILAMENT')
+        
+    def _set_vars(self):        
+        eventtime = self.reactor.monotonic()
+        client_vars = self.printer.lookup_object('gcode_macro _CLIENT_VARIABLE').get_status(eventtime)
+        cut_vars = self.printer.lookup_object('gcode_macro _CUT_PRUTOK').get_status(eventtime)
+        
+        self.x_left = client_vars.get('min_x', 0.0)
+        self.x_right = client_vars.get('max_x', 220.0)
+        self.y_front = client_vars.get('min_y', 0.0)
+        self.y_back = client_vars.get('max_y', 220.0)
+        self.z_max = 220.0 # Hardcoded
+        
+        self.cut_x = cut_vars.get('x_cut', -2.5)
+        self.cut_prepare_x = 20.0 # Hardcoded
+        self.cut_prepare_y = cut_vars.get('y_cut', -7.5)
+        
+        self.swap_z_movement = 5.0 # Hardcoded
+        
+        self.trash_x = client_vars.get('custom_park_x', 52.5)
+        self.trash_y = client_vars.get('custom_park_y', 229.0)
+        
+        self.travel_move_speed = 30000 # Validated against max at runtime
+        self.z_travel_move_speed = 1500 # Validated against max at runtime
+        self.cut_prepare_y_travel_move_speed = 1800 # Hardcoded
+        self.cut_move_speed = 600 # Hardcoded
+        self.enter_trash_move_speed = 3000 # Hardcoded
+        
+        self.x_center = (self.x_left + self.x_right) / 2
+        self.y_center = (self.y_front + self.y_back) / 2
+    
+    def _rename_macro(self, orig_name, new_name):
+        original_handler = self.gcode.gcode_handlers.pop(orig_name)
+        
+        if original_handler is None:
+            raise self.printer.config_error(
+                f"Target command {orig_name} not found to override!"
+            )
+            
+        self.gcode.register_command(
+            new_name, 
+            original_handler
+        )        
+        
+    def cmd_QS_GENERATE_TEST(self, gcmd):
+        old_debug = self.debug
+        self.debug = 2
+        try:
+            self.cmd_QS_CHANGE_FILAMENT(gcmd)
+        finally:
+            self.debug = old_debug
         
     def cmd_QS_WAIT_IFS_IDLE(self, gcmd):
         if self.zmod_ifs.ifs:
@@ -72,7 +125,10 @@ class QuickSwap:
             else:
                 with open('/usr/data/config/mod_data/quickswap_debug.txt', 'w') as f:
                     f.write('\n'.join(cmds))
-                self.gcode.run_script_from_command(f'_QS_ORIG_A_CHANGE_FILAMENT CHANNEL={channel} RESTORE_POSITION=1 RESTORE_TEMP=1')
+                if self.debug == 1:
+                    self.gcode.run_script_from_command(f'_QS_ORIG_A_CHANGE_FILAMENT CHANNEL={channel} RESTORE_POSITION=1 RESTORE_TEMP=1')
+                else:
+                    self.gcode.respond_info('QuickSwap: Test mode. Fallthrough disabled.')
         except Exception as e:
             if self.lang == 'ru':
                 msg = f"!! (QuickSwap) Ошибка при смене филамента: {str(e)}\nВстаю на паузу"
@@ -94,14 +150,14 @@ class QuickSwap:
             cmds += [f"RESPOND MSG='QuickSwap: {msg}'"]
 
     def _generate_quickswap_filament_gcode(self, unmapped_target_channel, cmds):        
-        status = self.gcode_move.get_status(self.reactor.now())
+        status = self.gcode_move.get_status(self.reactor.monotonic())
         old_channel = self.zmod_ifs.get_current_channel_from_config()
         target_channel = _qs_get_filament_mapping(unmapped_target_channel)
         
         self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, 1)
         
         nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0
-        layer_num = self.print_stats.get_status(self.reactor.now()).get('info', {}).get('current_layer', 1)
+        layer_num = self.print_stats.get_status(self.reactor.monotonic()).get('info', {}).get('current_layer', 1)
                 
         initial_pos = status.get('gcode_position')
         
@@ -143,6 +199,8 @@ class QuickSwap:
         cmds += ["_ENABLE_SENSOR"]
         cmds += ["IFS_MOTION_ON"]
         cmds += ["IFS_SWITCH_ON"]
+        cmds += ["_QS_WAIT_IFS_IDLE"]
+        cmds += ["IFS_F18 WAIT=0"]
         self.info(f'Filament change complete', cmds, 1)
         
         
@@ -219,10 +277,14 @@ class QuickSwap:
         relative_to_center_y = current_pos[1] - self.y_center
         closer_on_x = math.abs(relative_to_center_x) > math.abs(relative_to_center_y)
         
+        kinematics = self.toolhead.get_kinematics()
+        
+        z_travel_speed = math.min(kinematics.max_z_velocity, self.z_travel_move_speed)
+        
         if current_pos.z < z_max:
-            result += [None, None, math.min(current_pos.z + self.swap_z_movement, math.max(current_pos.z, z_max)), self.z_travel_move_speed]
+            result += [None, None, math.min(current_pos.z + self.swap_z_movement, math.max(current_pos.z, z_max)), z_travel_speed]
             
-        travel_speed = math.min(self.travel_move_speed, self.toolhead.kinematics.get_max_velocity() * 60)
+        travel_speed = self.toolhead.max_velocity
         
         if closer_on_x or relative_to_center_y > 0:
             if not closer_on_x:
@@ -250,6 +312,7 @@ class QuickSwap:
         return result
         
     def _qsf_move_from_cutter_to_trash(self, cmds):
+        # We don't need to adjust speed here, we can just let Klipper cap it as we aren't synchronizing it to anything.
         self.info(f'Moving to trash chute', cmds)
         cmds += [f"G1 X{self.cut_prepare_x} F{self.cut_move_speed}"]
         cmds += [f"G1 Y{self.y_front} F{self.travel_move_speed}"]
@@ -259,6 +322,7 @@ class QuickSwap:
         cmds += [f"G1 Y{self.trash_y} F{self.enter_trash_move_speed}"]
         
     def _qsf_return_to_print(self, initial_pos, cmds):
+        # Ditto.
         self.info(f'Returning to print', cmds)
         relative_to_center_x = current_pos[0] - self.x_center
         relative_to_center_y = current_pos[1] - self.y_center
@@ -291,9 +355,9 @@ class QuickSwap:
         
         unload_distance = old_filament_info['filament_unload_after_cutting'] + old_filament_info['nozzle_cleaning_length']
         
-        speed_factor = float(self.gcode_move.get_status(self.reactor.now()).get('speed_factor', 1.0))
+        speed_factor = float(self.gcode_move.get_status(self.reactor.monotonic()).get('speed_factor', 1.0))
         
-        self.gcode.run_script_from_command(f"G1 E{-unload_distance} F{old_filament_info['filament_extruder_speed']}
+        self.gcode.run_script_from_command(f"G1 E{-unload_distance} F{old_filament_info['filament_extruder_speed']}")
         cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={unload_distance} SPEED={old_filament_info['filament_extruder_speed'] * speed_factor} WAIT=0"]
         cmds += ["_QS_WAIT_IFS_IDLE"]
         
@@ -302,7 +366,7 @@ class QuickSwap:
     def _qsf_load_new_filament(self, old_filament_info, new_channel, new_filament_info, cmds):
         self.info(f'Loading channel {new_channel}', cmds)
         
-        speed_factor = float(self.gcode_move.get_status(self.reactor.now()).get('speed_factor', 1.0))
+        speed_factor = float(self.gcode_move.get_status(self.reactor.monotonic()).get('speed_factor', 1.0))
         
         cmds += [f"IFS_F24 PRUTOK={new_channel} WAIT=1"]
         cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={new_filament_info['filament_tube_length']} SPEED={new_filament_info['filament_ifs_speed'] * speed_factor} CHECK=1"]
@@ -316,7 +380,7 @@ class QuickSwap:
         cmds += ["M400"]
         
         cmds += ["_QS_WAIT_IFS_IDLE"]
-        cmds += [f"IFS_F39 PRUTOK={new_channel}"]
+        cmds += [f"IFS_F39 PRUTOK={new_channel} WAIT=0"]
         cmds += [f"_SET_EXTRUDER_SLOT SLOT={new_channel}"]
         cmds += [f"SDCARD_SET_CHANNEL CHANNEL={new_channel}"]
         cmds += ["SDCARD_ENABLE_FFM ENABLE=1"]
