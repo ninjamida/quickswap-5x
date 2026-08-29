@@ -145,14 +145,14 @@ class QuickSwap:
             cmds = []
             channel = gcmd.get_int('CHANNEL', 0)
             self._generate_quickswap_filament_gcode(channel, cmds)
-            
+
             if self.debug >= DEBUG_LEVEL_SAVE_AND_EXECUTE:
                 with open('/usr/data/config/mod_data/quickswap_debug.txt', 'w') as f:
                     f.write('\n'.join(cmds))
-            
+
             if self.debug <= DEBUG_LEVEL_SAVE_AND_EXECUTE:
                 self.gcode.run_script_from_command('\n'.join(cmds))
-                
+
             if self.debug == DEBUG_LEVEL_SAVE_AND_FALLBACK:
                 self.gcode.run_script_from_command(f'_QS_ORIG_A_CHANGE_FILAMENT CHANNEL={channel} RESTORE_POSITION=1 RESTORE_TEMP=1')
         except Exception as e:
@@ -182,7 +182,7 @@ class QuickSwap:
     def info(self, msg, cmds, level=0):
         if self.silent <= level:
             cmds += [f"RESPOND MSG='QuickSwap: {msg}'"]
-            
+
     def log(self, msg, cmds):
         if self.debug > DEBUG_LEVEL_NONE:
             cmds += [f'# {msg}']
@@ -266,12 +266,6 @@ class QuickSwap:
             new_x = internal_pos[0]
             new_y = internal_pos[1]
             new_z = internal_pos[2]
-            if move[0] is not None:
-                new_x = move[0]
-            if move[1] is not None:
-                new_y = move[1]
-            if move[2] is not None:
-                new_z = move[2]
 
             if remaining_withdraw_duration <= 0:
                 extruder_move = 0
@@ -282,35 +276,54 @@ class QuickSwap:
             elif remaining_withdraw_duration >= move[4]:
                 extruder_move = move[4] * (extruder_speed / 60)
                 extruder_move_time = move[4]
+                remaining_withdraw_duration -= move[4]
             else:
                 extruder_move = remaining_withdraw_duration * (extruder_speed / 60)
                 extruder_move_time = remaining_withdraw_duration
+                remaining_withdraw_duration = 0
 
-            if extruder_move_time <= 0:
-                cmds += [f"G1 X{new_x} Y{new_y} Z{new_z} F{move[3]}"]
+            if extruder_move_time <= 0 or round(extruder_move, 2) <= 0:
+                cmds += [f"G1 {self._make_position_text(move)} F{move[3]}"]
             elif extruder_move_time == move[4]:
-                cmds += [f"G1 X{new_x} Y{new_y} Z{new_z} E{-extruder_move} F{move[3]}"]
+                cmds += [f"G1 {self._make_position_text(move)} E-{extruder_move:.2f} F{move[3]}"]
             else:
                 split_point = self._get_move_split_point(initial_pos, [new_x, new_y, new_z], move[4], extruder_move_time)
-                cmds += [f"G1 X{split_point[0]} Y{split_point[1]} Z{split_point[2]} E{-extruder_move} F{move[3]}"]
+                cmds += [f"G1 {self._make_position_text(split_point)} E-{extruder_move:.2f} F{move[3]}"]
                 cmds += [f"IFS_F24 PRUTOK={old_channel} WAIT=0"]
-                cmds += [f"G1 X{new_x} Y{new_y} Z{new_z} F{move[3]}"]
+                cmds += [f"G1 {self._make_position_text(move)} F{move[3]}"]
                 done_ifs_grab = True
 
             internal_pos = [new_x, new_y, new_z]
 
         if remaining_withdraw_duration > 0:
             extruder_move = remaining_withdraw_duration * (extruder_speed / 60)
-            cmds += [f"G1 E{-extruder_move} F{extruder_speed}"]
+            cmds += [f"G1 E{-extruder_move:.2f} F{extruder_speed}"]
 
         if not done_ifs_grab:
             cmds += [f"IFS_F24 PRUTOK={old_channel} WAIT=0"]
+
+    def _make_position_text(self, move):
+        move_positions = []
+        if move[0] is not None:
+            new_x = move[0]
+            move_positions += [f'X{new_x}']
+        if move[1] is not None:
+            new_y = move[1]
+            move_positions += [f'Y{new_y}']
+        if move[2] is not None:
+            new_z = move[2]
+            move_positions += [f'Z{new_z}']
+
+        return ' '.join(move_positions)
 
     def _get_move_split_point(self, initial_pos, new_pos, move_duration, split_duration):
         factor = split_duration / move_duration
         result = []
         for i in range(3):
-            result += [initial_pos[i] + ((new_pos[i] - initial_pos[i]) * split_duration / move_duration)]
+            if initial_pos[i] == new_pos[i]:
+                result += [None]
+            else:
+                result += [initial_pos[i] + ((new_pos[i] - initial_pos[i]) * split_duration / move_duration)]
         return result
 
     def _get_moves_to_cutter(self, current_pos):
@@ -321,12 +334,12 @@ class QuickSwap:
 
         kinematics = self.toolhead.get_kinematics()
 
-        z_travel_speed = min(kinematics.max_z_velocity, self.z_travel_move_speed)
+        z_travel_speed = min(kinematics.max_z_velocity * 60, self.z_travel_move_speed)
 
         if current_pos.z < self.z_max:
             result += [[None, None, min(current_pos.z + self.swap_z_movement, max(current_pos.z, self.z_max)), z_travel_speed]]
 
-        travel_speed = self.toolhead.max_velocity
+        travel_speed = min(self.toolhead.max_velocity * 60, self.travel_move_speed)
 
         if closer_on_x or relative_to_center_y > 0:
             if not closer_on_x:
@@ -344,16 +357,18 @@ class QuickSwap:
 
     def _calculate_move_durations(self, current_pos, moveset):
         result = []
+        current_pos = list(current_pos)
         for move in moveset:
             new_pos = current_pos
             distance_sqr = 0
             for i in range(3):
                 if move[i] is not None:
                     distance_sqr += (current_pos[i] - move[i]) ** 2
-                    current_pos = move[i]
+                    new_pos[i] = move[i]
             distance = math.sqrt(distance_sqr)
-            result += [move + [distance / (move[3] / 60)]]
-            current_pos = new_pos
+            if distance > 0:
+                result += [move + [distance / (move[3] / 60)]]
+                current_pos = new_pos
         return result
 
     def _qsf_move_from_cutter_to_trash(self, cmds):
@@ -403,10 +418,10 @@ class QuickSwap:
         speed_factor = float(self.gcode_move.get_status(self.reactor.monotonic()).get('speed_factor', 1.0))
 
         cmds += [f"G1 E{-unload_distance} F{old_filament_info['filament_extruder_speed']}"]
-        cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={unload_distance} SPEED={old_filament_info['filament_extruder_speed'] * speed_factor} WAIT=0"]
+        cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={unload_distance} SPEED={int(old_filament_info['filament_extruder_speed'] * speed_factor)} WAIT=0"]
         cmds += ["_QS_WAIT_IFS_IDLE"]
 
-        cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={old_filament_info['filament_unload_into_tube']} SPEED={old_filament_info['filament_ifs_speed'] * speed_factor}"]
+        cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={old_filament_info['filament_unload_into_tube']} SPEED={int(old_filament_info['filament_ifs_speed'] * speed_factor)}"]
 
     def _qsf_load_new_filament(self, old_filament_info, new_channel, new_filament_info, cmds):
         self.info(f'Loading channel {new_channel}', cmds)
@@ -414,13 +429,12 @@ class QuickSwap:
         speed_factor = float(self.gcode_move.get_status(self.reactor.monotonic()).get('speed_factor', 1.0))
 
         cmds += [f"IFS_F24 PRUTOK={new_channel} WAIT=1"]
-        cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={new_filament_info['filament_tube_length']} SPEED={new_filament_info['filament_ifs_speed'] * speed_factor} CHECK=1"]
-        cmds += ["M400"]
+        cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={new_filament_info['filament_tube_length']} SPEED={int(new_filament_info['filament_ifs_speed'] * speed_factor)} CHECK=1"]
 
         cmds += [f"M104 S{new_filament_info['temp']}"]
 
         insert_length = 12 + old_filament_info['filament_unload_before_cutting']
-        cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={insert_length} SPEED={new_filament_info['filament_extruder_speed'] * speed_factor} WAIT=0 CHECK=0"]
+        cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={insert_length} SPEED={int(new_filament_info['filament_extruder_speed'] * speed_factor)} WAIT=0 CHECK=0"]
         cmds += [f"G1 E{insert_length} F{new_filament_info['filament_extruder_speed']}"]
         cmds += ["M400"]
 
@@ -452,7 +466,6 @@ class QuickSwap:
 
         if channel >= len(mapping):
             raise self.printer.command_error(f"Error: CHANNEL {channel} is out of range (max {len(mapping)-1})")
-            return
 
         return mapping[channel]
 
