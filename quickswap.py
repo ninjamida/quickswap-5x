@@ -251,6 +251,8 @@ class QuickSwap:
             new_target_channel = self._qs_get_switchover(target_channel)
             if new_target_channel <= 0:
                 raise self.printer.command_error(f"Error: IFS reports channel {target_channel} is empty and no matching filament found")
+            else:
+                self.info(f'Channel {target_channel} is empty. Switching to identical filament on channel {new_target_channel}', cmds)
             target_channel = new_target_channel
 
         # Source channel is empty - purge if not empty at extruder; then skip unload
@@ -627,7 +629,7 @@ class QuickSwap:
         old_color = filament_config.get(f"ffmColor{target_channel}", "#000000")
 
         for i in range(1, self.zmod_ifs.color_limit + 1):
-            if not zmod_ifs.get_port(i):
+            if not self.zmod_ifs.get_port(i):
                 continue
             this_type = filament_config.get(f'ffmType{i}', None)
             this_color = filament_config.get(f'ffmColor{i}', None)

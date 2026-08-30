@@ -4,7 +4,10 @@ Compatibility requirements:
 - Native screen must be disabled. Any alternative is fine.
 - Must not be using Bambufy or LessWaste plugins.
 - Must use either Nopoop or Slicer-Controlled Poop.
-- To avoid doubt; compatible with IFS Jacker.
+
+And to avoid doubt:
+- YES, automatic switch on runout works, including in multicolor prints
+- YES, compatible with IFS Jacker
 
 For best results:
 - Set filament_unload_before_cutting to 20
@@ -23,13 +26,6 @@ this, almost the entire process is controlled by a Python script which cuts out
 a lot of the "there for the sake of non-printing loading / unloading" stuff and
 optimizes some of the timings. The end result is - especially when using unload
 before cut - an optimized color change process.
-
-Caveats:
-If a filament runs out mid-print such that there is still filament in the tube,
-but the end of it has passed through the IFS, then Z-Mod has a behavior to purge
-the rest of the filament at the next color change (to avoid blocking the tube).
-In this situation, QuickSwap will not activate for that color change, and the
-printer will instead fall back to Z-Mod's standard color change routine.
 
 To hide the console messages, add to user.cfg:
 [quickswap]
