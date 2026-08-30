@@ -40,6 +40,9 @@ class QuickSwap:
         self.silent = config.getint('silent', SILENT_LEVEL_ALL)
         self.debug = config.getint('debug', DEBUG_LEVEL_NONE)
 
+        self.purge_step_length = config.getint('purge_step_length', 15)
+        self.purge_finish_length = config.getint('purge_finish_length', 15)
+
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
         self.gcode.register_command('_QS_CHANGE_FILAMENT', self.cmd_QS_CHANGE_FILAMENT)
@@ -188,16 +191,14 @@ class QuickSwap:
             cmds += [f'# {msg}']
 
     def _generate_quickswap_filament_gcode(self, unmapped_target_channel, cmds):
-        # TODO: Handle situation of target channel being empty
         status = self.gcode_move.get_status(self.reactor.monotonic())
         old_channel = self.zmod_ifs.get_current_channel_from_config()
         target_channel = self._qs_get_filament_mapping(unmapped_target_channel)
-
-        self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, SILENT_LEVEL_PRIORITY)
+        skip_unload = False
+        already_at_trash = False
 
         nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0
         layer_num = self.print_stats.get_status(self.reactor.monotonic()).get('info', {}).get('current_layer', 1)
-
         initial_pos = status.get('gcode_position')
 
         old_filament_info = self.zmod_ifs.get_prutok_config(old_channel)
@@ -206,26 +207,56 @@ class QuickSwap:
         if old_filament_info is None:
             old_filament_info = new_filament_info
 
+        self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, SILENT_LEVEL_PRIORITY)
+
+        # Handle edge cases
+
+        # Source channel is empty - purge if not empty at extruder; then skip unload
+        if not self.zmod_ifs.ifs_data.get_port(old_channel):
+            cmds += [f"IFS_F24 PRUTOK={new_channel} WAIT=0"]
+            if self.zmod_ifs.get_extruder_sensor():
+                self.info(f'Old channel empty at IFS, loaded at extruder. Purging.', cmds)
+                if not (nopoop and layer_num >= 2):
+                    already_at_trash = True
+                purge_cmd = f'_QS_PURGE_OLD_FILAMENT TUBE_LENGTH={old_filament_info.filament_tube_length} DROP_LENGTH={old_filament_info.filament_drop_length} DROP_SPEED={old_filament_info.filament_extruder_speed} EXTRA_PURGE={old_filament_info.filament_unload_before_cutting}'
+                if not already_at_trash:
+                    purge_cmd += f' RETURN_X={initial_pos[0]} RETURN_Y={initial_pos[1]} RETURN_Z={initial_pos[2]}'
+                cmds += [purge_cmd]
+            else:
+                self.info(f'Old channel empty. Skipping unload.', cmds)
+            skip_unload = True
+
+        # Target channel is empty - give error
+        # TODO: Attempt to find a match in a different channel first
+        if not self.zmod_ifs.ifs_data.get_port(target_channel):
+            self.info(f'Empty target channel detected', cmds)
+            raise self.printer.command_error(f"Error: IFS reports channel {channel} is empty")
+
         cmds += ["SAVE_GCODE_STATE NAME=qs_change_filament"]
         cmds += ["_DISABLE_SENSOR"]
         cmds += ["G90"] # Absolute
         cmds += ["M83"] # Relative extruder
 
-        self._qsf_move_to_cutter(status, initial_pos, old_channel, old_filament_info, cmds)
-
-        cmds += [f"G1 X{self.cut_x} F{self.cut_move_speed}"]
-
-        if nopoop and layer_num > 1:
-            self._qsf_return_to_print(initial_pos, cmds)
+        if skip_unload:
+            if not already_at_trash:
+                if not (nopoop and layer_num >= 2):
+                    self._qsf_move_trash_direct(status, initial_pos, cmds)
         else:
-            self._qsf_move_from_cutter_to_trash(cmds)
+            self._qsf_move_to_cutter(status, initial_pos, old_channel, old_filament_info, cmds)
 
-        cmds += ["M400"]
-        cmds += ["_QS_WAIT_IFS_IDLE"]
+            cmds += [f"G1 X{self.cut_x} F{self.cut_move_speed}"]
 
-        self._qsf_unload_old_filament(old_channel, old_filament_info, cmds)
+            if nopoop and layer_num > 1:
+                self._qsf_return_to_print(initial_pos, cmds)
+            else:
+                self._qsf_move_from_cutter_to_trash(cmds)
 
-        self._qsf_load_new_filament(old_filament_info, target_channel, new_filament_info, cmds)
+            cmds += ["M400"]
+            cmds += ["_QS_WAIT_IFS_IDLE"]
+
+            self._qsf_unload_old_filament(old_channel, old_filament_info, cmds)
+
+        self._qsf_load_new_filament(old_filament_info, target_channel, new_filament_info, skip_unload, cmds)
 
         if nopoop:
             if layer_num > 1:
@@ -245,6 +276,62 @@ class QuickSwap:
         cmds += ["IFS_F18 WAIT=0"]
         self.info(f'Filament change complete', cmds, SILENT_LEVEL_PRIORITY)
 
+    def _qs_purge_old_filament(self, gcmd):
+        initial_fan_speed = self.printer.lookup_object('fan_generic fanM106').get_status(self.reactor.monotonic())['speed']
+
+        tube_length = gcmd.get_int('TUBE_LENGTH')
+        drop_length = gcmd.get_int('DROP_LENGTH')
+        drop_speed = gcmd.get_int('DROP_SPEED')
+        extra_purge = gcmd.get_int('EXTRA_PURGE')
+
+        return_x = gcmd.get_int('RETURN_X', None)
+        return_y = gcmd.get_int('RETURN_Y', None)
+        return_z = gcmd.get_int('RETURN_Z', None)
+        has_return = None not in [return_x, return_y, return_z]
+
+        cmds = []
+
+        self.gcode.run_script_from_command("_DISABLE_SENSOR")
+        self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=0')
+
+        self._qsf_move_trash_direct(initial_pos)
+
+        remaining_purge_length = tube_length
+        remaining_poop_length = drop_length
+        done_grip = False
+
+        while remaining_purge_length > 0:
+            if not self.zmod_ifs.get_extruder_sensor():
+                remaining_purge_length = min(remaining_purge_length, extra_purge)
+                remaining_poop_length = remaining_purge_length
+                this_extrude_length = remaining_purge_length
+            else:
+                this_extrude_length = min(self.purge_step_length, remaining_poop_length, remaining_purge_length)
+
+            self.gcode.run_script_from_command('G1 E{this_extrude_length} F{drop_speed}\nM400')
+            remaining_poop_length -= this_extrude_length
+            remaining_purge_length -= this_extrude_length
+
+            if remaining_purge_length <= 0 or remaining_poop_length <= 0:
+                self.gcode.run_script_from_command(f'SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED=0')
+                remaining_poop_length = drop_length
+                if remaining_purge_length > 0:
+                    self.gcode.run_script_from_command('_GOTO_TRASH')
+
+        if self.zmod_ifs.get_extruder_sensor():
+            self.gcode.run_script_from_command('_GOTO_TRASH')
+            if self.zmod_ifs.get_extruder_sensor():
+                raise self.printer.command_error(f"Error: Failed to purge old filament")
+
+        if has_return:
+            self.gcode.run_script_from_command("_CLEAR_REZINA")
+            self.gcode.run_script_from_command(f"G1 X{return_x} Y{return_y} F{self.travel_move_speed}")
+            self.gcode.run_script_from_command(f"G1 Z{return_z} F{self.z_travel_move_speed}")
+        else:
+            self.gcode.run_script_from_command('_GOTO_TRASH')
+
+        self.gcode.run_script_from_command('_ENABLE_SENSOR')
+        self.gcode.run_script_from_command(f'SET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}')
 
     def _qsf_move_to_cutter(self, status, initial_pos, old_channel, old_filament_info, cmds):
         # Move to cutter while simultaneously performing unload before cut
@@ -371,6 +458,27 @@ class QuickSwap:
                 current_pos = new_pos
         return result
 
+    def _qsf_move_trash_direct(self, initial_pos, cmds):
+        self.info(f'Moving directly to trash chute', cmds)
+        if initial_pos.z < self.z_max:
+            cmds += [f"G1 Z{min(initial_pos.z + self.swap_z_movement, max(initial_pos.z, self.z_max))} F{self.z_travel_move_speed}"]
+
+        relative_to_center_x = initial_pos[0] - self.x_center
+        relative_to_center_y = initial_pos[1] - self.y_center
+        closer_on_x = abs(relative_to_center_x) > abs(relative_to_center_y)
+        if closer_on_x or relative_to_center_y < 0:
+            if not closer_on_x:
+                cmds += [f"G1 Y{self.y_front} F{self.travel_move_speed}"]
+
+            if relative_to_center_x < 0:
+                cmds += [f"G1 X{self.x_left} F{self.travel_move_speed}"]
+            else:
+                cmds += [f"G1 X{self.x_right} F{self.travel_move_speed}"]
+
+        cmds += [f"G1 Y{self.y_back} F{self.travel_move_speed}"]
+        cmds += [f"G1 X{self.trash_x} F{self.travel_move_speed}"]
+        cmds += [f"G1 Y{self.trash_y} F{self.enter_trash_move_speed}"]
+
     def _qsf_move_from_cutter_to_trash(self, cmds):
         # We don't need to adjust speed here, we can just let Klipper cap it as we aren't synchronizing it to anything.
         self.info(f'Moving to trash chute', cmds)
@@ -423,12 +531,15 @@ class QuickSwap:
 
         cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={old_filament_info['filament_unload_into_tube']} SPEED={int(old_filament_info['filament_ifs_speed'] * speed_factor)}"]
 
-    def _qsf_load_new_filament(self, old_filament_info, new_channel, new_filament_info, cmds):
+    def _qsf_load_new_filament(self, old_filament_info, new_channel, new_filament_info, skip_unload, cmds):
         self.info(f'Loading channel {new_channel}', cmds)
 
         speed_factor = float(self.gcode_move.get_status(self.reactor.monotonic()).get('speed_factor', 1.0))
 
-        cmds += [f"IFS_F24 PRUTOK={new_channel} WAIT=1"]
+        if skip_unload:
+            cmds += ['_QS_WAIT_IFS_IDLE']
+        else:
+            cmds += [f"IFS_F24 PRUTOK={new_channel} WAIT=1"]
         cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={new_filament_info['filament_tube_length']} SPEED={int(new_filament_info['filament_ifs_speed'] * speed_factor)} CHECK=1"]
 
         cmds += [f"M104 S{new_filament_info['temp']}"]
