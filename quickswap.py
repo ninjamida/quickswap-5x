@@ -51,6 +51,7 @@ class QuickSwap:
         self.gcode.register_command('_QS_CHANGE_FILAMENT', self.cmd_QS_CHANGE_FILAMENT)
         self.gcode.register_command('_QS_WAIT_IFS_IDLE', self.cmd_QS_WAIT_IFS_IDLE)
         self.gcode.register_command('_QS_GENERATE_TEST', self.cmd_QS_GENERATE_TEST)
+        self.gcode.register_command('_QS_CHANGE_ANALOG_FILAMENT', self.cmd_QS_CHANGE_ANALOG_FILAMENT)
 
         # Fill with defaults for now. Load user's actual values in _handle_ready.
         max_z_velocity = 25.0
@@ -87,6 +88,8 @@ class QuickSwap:
         self._set_vars()
         self._rename_macro('_A_CHANGE_FILAMENT', '_QS_ORIG_A_CHANGE_FILAMENT')
         self._rename_macro('_QS_A_CHANGE_FILAMENT', '_A_CHANGE_FILAMENT')
+        self._rename_macro('ANALOG_PRUTOK', '_QS_ORIG_ANALOG_PRUTOK')
+        self._rename_macro('_QS_ANALOG_PRUTOK', 'ANALOG_PRUTOK')
 
     def _set_vars(self):
         eventtime = self.reactor.monotonic()
@@ -145,12 +148,20 @@ class QuickSwap:
                 if self.silent == SILENT_LEVEL_ALL:
                     self.gcode.respond_info('QuickSwap: Waiting for IFS to be idle')
                 self.zmod_ifs.wait_for_state(FFS_state=IFS_IDLE_STATE_VALUE)
+                
+    def cmd_QS_CHANGE_ANALOG_FILAMENT(self, gcmd):
+        # 1. (DONE) Load the new filament but go to trash no matter what
+        # 2. Take a shit once. Use lesser of filament_drop_length or the actual (rough) sensor-to-nozzle-tip distance
+        # 3. Return to print
+        self.gcode.run_script_from_command('_A_CHANGE_FILAMENT SWITCHOVER=1')
+        pass
 
     def cmd_QS_CHANGE_FILAMENT(self, gcmd):
         try:
             cmds = []
             channel = gcmd.get_int('CHANNEL', 0)
-            self._generate_quickswap_filament_gcode(channel, cmds)
+            switchover = gcmd.get_int('SWITCHOVER', 0)
+            self._generate_quickswap_filament_gcode(channel, switchover != 0, cmds)
 
             if self.debug >= DEBUG_LEVEL_SAVE_AND_EXECUTE:
                 with open('/usr/data/config/mod_data/quickswap_debug.txt', 'w') as f:
@@ -193,14 +204,18 @@ class QuickSwap:
         if self.debug > DEBUG_LEVEL_NONE:
             cmds += [f'# {msg}']
 
-    def _generate_quickswap_filament_gcode(self, unmapped_target_channel, cmds):
+    def _generate_quickswap_filament_gcode(self, unmapped_target_channel, switchover, cmds):
+        # TODO: Skip entire process if full color change disabled, source/target are same, and no runout condition
         status = self.gcode_move.get_status(self.reactor.monotonic())
         old_channel = self.zmod_ifs.get_current_channel_from_config()
-        target_channel = self._qs_get_filament_mapping(unmapped_target_channel)
+        if switchover:
+            target_channel = old_channel
+        else:
+            target_channel = self._qs_get_filament_mapping(unmapped_target_channel)
         skip_unload = False
         already_at_trash = False
 
-        nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0
+        nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0 and not switchover
         layer_num = self.print_stats.get_status(self.reactor.monotonic()).get('info', {}).get('current_layer', 1)
         initial_pos = status.get('gcode_position')
 
@@ -209,16 +224,20 @@ class QuickSwap:
 
         if old_filament_info is None:
             old_filament_info = new_filament_info
-
-        self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, SILENT_LEVEL_PRIORITY)
+        
+        if switchover:
+            self.info(f'Changing filament on runout to physical channel {target_channel}', cmds, SILENT_LEVEL_PRIORITY)
+        else:
+            self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, SILENT_LEVEL_PRIORITY)
 
         # Handle edge cases
 
         # Target channel is empty - try to match to a different one, if none, error
         if not self.zmod_ifs.ifs_data.get_port(target_channel):
-            target_channel = self._qs_get_switchover(target_channel)
-            if target_channel <= 0:
-                raise self.printer.command_error(f"Error: IFS reports channel {channel} is empty and no matching filament found")
+            new_target_channel = self._qs_get_switchover(target_channel)
+            if new_target_channel <= 0:
+                raise self.printer.command_error(f"Error: IFS reports channel {target_channel} is empty and no matching filament found")
+            target_channel = new_target_channel
 
         # Source channel is empty - purge if not empty at extruder; then skip unload
         if not self.zmod_ifs.ifs_data.get_port(old_channel):
@@ -231,7 +250,7 @@ class QuickSwap:
                 if not already_at_trash:
                     purge_cmd += f' RETURN_X={initial_pos[0]} RETURN_Y={initial_pos[1]} RETURN_Z={initial_pos[2]}'
                 cmds += [purge_cmd]
-            else:
+            elif not switchover:
                 self.info(f'Old channel empty. Skipping unload.', cmds)
             skip_unload = True
 
