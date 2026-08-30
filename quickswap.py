@@ -240,27 +240,27 @@ class QuickSwap:
         if skip_unload:
             if not already_at_trash:
                 if not (nopoop and layer_num >= 2):
-                    self._qsf_move_trash_direct(status, initial_pos, cmds)
+                    self._qs_move_trash_direct(status, initial_pos, cmds)
         else:
-            self._qsf_move_to_cutter(status, initial_pos, old_channel, old_filament_info, cmds)
+            self._qs_move_to_cutter(status, initial_pos, old_channel, old_filament_info, cmds)
 
             cmds += [f"G1 X{self.cut_x} F{self.cut_move_speed}"]
 
             if nopoop and layer_num > 1:
-                self._qsf_return_to_print(initial_pos, cmds)
+                self._qs_return_to_print(initial_pos, cmds)
             else:
-                self._qsf_move_from_cutter_to_trash(cmds)
+                self._qs_move_from_cutter_to_trash(cmds)
 
             cmds += ["M400"]
             cmds += ["_QS_WAIT_IFS_IDLE"]
 
-            self._qsf_unload_old_filament(old_channel, old_filament_info, cmds)
+            self._qs_unload_old_filament(old_channel, old_filament_info, cmds)
 
-        self._qsf_load_new_filament(old_filament_info, target_channel, new_filament_info, skip_unload, cmds)
+        self._qs_load_new_filament(old_filament_info, target_channel, new_filament_info, skip_unload, cmds)
 
         if nopoop:
             if layer_num > 1:
-                self._qsf_nopoop_wipe(cmds)
+                self._qs_nopoop_wipe(cmds)
             else:
                 cmds += ["_SBROS_TRASH"]
                 cmds += ["_CLEAR_REZINA"]
@@ -294,7 +294,7 @@ class QuickSwap:
         self.gcode.run_script_from_command("_DISABLE_SENSOR")
         self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=0')
 
-        self._qsf_move_trash_direct(initial_pos)
+        self._qs_move_trash_direct(initial_pos)
 
         remaining_purge_length = tube_length
         remaining_poop_length = drop_length
@@ -333,7 +333,7 @@ class QuickSwap:
         self.gcode.run_script_from_command('_ENABLE_SENSOR')
         self.gcode.run_script_from_command(f'SET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}')
 
-    def _qsf_move_to_cutter(self, status, initial_pos, old_channel, old_filament_info, cmds):
+    def _qs_move_to_cutter(self, status, initial_pos, old_channel, old_filament_info, cmds):
         # Move to cutter while simultaneously performing unload before cut
         self.info(f'Moving to cutter', cmds)
 
@@ -458,7 +458,7 @@ class QuickSwap:
                 current_pos = new_pos
         return result
 
-    def _qsf_move_trash_direct(self, initial_pos, cmds):
+    def _qs_move_trash_direct(self, initial_pos, cmds):
         self.info(f'Moving directly to trash chute', cmds)
         if initial_pos.z < self.z_max:
             cmds += [f"G1 Z{min(initial_pos.z + self.swap_z_movement, max(initial_pos.z, self.z_max))} F{self.z_travel_move_speed}"]
@@ -479,7 +479,7 @@ class QuickSwap:
         cmds += [f"G1 X{self.trash_x} F{self.travel_move_speed}"]
         cmds += [f"G1 Y{self.trash_y} F{self.enter_trash_move_speed}"]
 
-    def _qsf_move_from_cutter_to_trash(self, cmds):
+    def _qs_move_from_cutter_to_trash(self, cmds):
         # We don't need to adjust speed here, we can just let Klipper cap it as we aren't synchronizing it to anything.
         self.info(f'Moving to trash chute', cmds)
         cmds += [f"G1 X{self.cut_prepare_x} F{self.cut_move_speed}"]
@@ -489,7 +489,7 @@ class QuickSwap:
         cmds += [f"G1 X{self.trash_x} F{self.travel_move_speed}"]
         cmds += [f"G1 Y{self.trash_y} F{self.enter_trash_move_speed}"]
 
-    def _qsf_return_to_print(self, initial_pos, cmds):
+    def _qs_return_to_print(self, initial_pos, cmds):
         # Ditto.
         self.info(f'Returning to print', cmds)
         relative_to_center_x = current_pos[0] - self.x_center
@@ -518,7 +518,7 @@ class QuickSwap:
         cmds += ["G1 Z{initial_pos[2]} F{self.z_travel_move_speed}"]
 
 
-    def _qsf_unload_old_filament(self, old_channel, old_filament_info, cmds):
+    def _qs_unload_old_filament(self, old_channel, old_filament_info, cmds):
         self.info(f'Unloading channel {old_channel}', cmds)
 
         unload_distance = old_filament_info['filament_unload_after_cutting'] + old_filament_info['nozzle_cleaning_length']
@@ -531,7 +531,7 @@ class QuickSwap:
 
         cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={old_filament_info['filament_unload_into_tube']} SPEED={int(old_filament_info['filament_ifs_speed'] * speed_factor)}"]
 
-    def _qsf_load_new_filament(self, old_filament_info, new_channel, new_filament_info, skip_unload, cmds):
+    def _qs_load_new_filament(self, old_filament_info, new_channel, new_filament_info, skip_unload, cmds):
         self.info(f'Loading channel {new_channel}', cmds)
 
         speed_factor = float(self.gcode_move.get_status(self.reactor.monotonic()).get('speed_factor', 1.0))
@@ -556,7 +556,7 @@ class QuickSwap:
         cmds += ["SDCARD_ENABLE_FFM ENABLE=1"]
         cmds += ["M400"]
 
-    def _qsf_nopoop_wipe(self, cmds):
+    def _qs_nopoop_wipe(self, cmds):
         self.info(f'Performing nopoop wipe', cmds)
         cmds += ["SAVE_GCODE_STATE NAME=nopoop_flatten"]
         cmds += ["G91"]
