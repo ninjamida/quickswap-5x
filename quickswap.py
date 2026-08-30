@@ -150,11 +150,23 @@ class QuickSwap:
                 self.zmod_ifs.wait_for_state(FFS_state=IFS_IDLE_STATE_VALUE)
                 
     def cmd_QS_CHANGE_ANALOG_FILAMENT(self, gcmd):
-        # 1. (DONE) Load the new filament but go to trash no matter what
-        # 2. Take a shit once. Use lesser of filament_drop_length or the actual (rough) sensor-to-nozzle-tip distance
-        # 3. Return to print
+        status = self.gcode_move.get_status(self.reactor.monotonic())
+        initial_pos = status.get('gcode_position')
+        
         self.gcode.run_script_from_command('_A_CHANGE_FILAMENT SWITCHOVER=1')
-        pass
+        channel = self.zmod_ifs.get_current_channel_from_config()
+        filament_info = self.zmod_ifs.get_prutok_config(channel)
+        
+        drop_length = filament_info['filament_drop_length']
+        extruder_speed = filament_info['filament_extruder_speed']
+        initial_fan_speed = self.printer.lookup_object('fan_generic fanM106').get_status(self.reactor.monotonic())['speed']
+        
+        self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=0\n_DISABLE_SENSOR')
+        self.gcode.run_script_from_command(f'G1 E{drop_length} F{extruder_speed}')
+        self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}\n_ENABLE_SENSOR')
+        self.gcode.run_script_from_command(f'G1 X{initial_pos[0]} Y{initial_pos[1]} F{self.travel_move_speed}')
+        self.gcode.run_script_from_command(f'G1 Z{initial_pos[2]} F{self.z_travel_move_speed}')
+        self.gcode.run_script_from_command('RESTORE_GCODE_STATE NAME=qs_change_filament')
 
     def cmd_QS_CHANGE_FILAMENT(self, gcmd):
         try:
@@ -229,6 +241,8 @@ class QuickSwap:
             self.info(f'Changing filament on runout to physical channel {target_channel}', cmds, SILENT_LEVEL_PRIORITY)
         else:
             self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, SILENT_LEVEL_PRIORITY)
+            
+        cmds += ["SAVE_GCODE_STATE NAME=qs_change_filament"]
 
         # Handle edge cases
 
@@ -241,7 +255,7 @@ class QuickSwap:
 
         # Source channel is empty - purge if not empty at extruder; then skip unload
         if not self.zmod_ifs.ifs_data.get_port(old_channel):
-            cmds += [f"IFS_F24 PRUTOK={new_channel} WAIT=0"]
+            cmds += [f"IFS_F24 PRUTOK={target_channel} WAIT=0"]
             if self.zmod_ifs.get_extruder_sensor():
                 self.info(f'Old channel empty at IFS, loaded at extruder. Purging.', cmds)
                 if not (nopoop and layer_num >= 2):
@@ -254,7 +268,6 @@ class QuickSwap:
                 self.info(f'Old channel empty. Skipping unload.', cmds)
             skip_unload = True
 
-        cmds += ["SAVE_GCODE_STATE NAME=qs_change_filament"]
         cmds += ["_DISABLE_SENSOR"]
         cmds += ["G90"] # Absolute
         cmds += ["M83"] # Relative extruder
@@ -262,9 +275,9 @@ class QuickSwap:
         if skip_unload:
             if not already_at_trash:
                 if not (nopoop and layer_num >= 2):
-                    self._qs_move_trash_direct(status, initial_pos, cmds)
+                    self._qs_move_trash_direct(initial_pos, cmds)
         else:
-            self._qs_move_to_cutter(status, initial_pos, old_channel, old_filament_info, cmds)
+            self._qs_move_to_cutter(initial_pos, old_channel, old_filament_info, cmds)
 
             cmds += [f"G1 X{self.cut_x} F{self.cut_move_speed}"]
 
@@ -324,7 +337,7 @@ class QuickSwap:
 
         while remaining_purge_length > 0:
             if not self.zmod_ifs.get_extruder_sensor():
-                remaining_purge_length = min(remaining_purge_length, extra_purge)
+                remaining_purge_length = min(remaining_purge_length, self.purge_finish_length + extra_purge)
                 remaining_poop_length = remaining_purge_length
                 this_extrude_length = remaining_purge_length
             else:
@@ -355,7 +368,7 @@ class QuickSwap:
         self.gcode.run_script_from_command('_ENABLE_SENSOR')
         self.gcode.run_script_from_command(f'SET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}')
 
-    def _qs_move_to_cutter(self, status, initial_pos, old_channel, old_filament_info, cmds):
+    def _qs_move_to_cutter(self, initial_pos, old_channel, old_filament_info, cmds):
         # Move to cutter while simultaneously performing unload before cut
         self.info(f'Moving to cutter', cmds)
 
@@ -602,7 +615,7 @@ class QuickSwap:
 
         return mapping[channel]
 
-    def _qs_get_switchover(self, target_channel)
+    def _qs_get_switchover(self, target_channel):
         new_channel = -1
 
         with open(FFCONFIG, 'r') as f:
