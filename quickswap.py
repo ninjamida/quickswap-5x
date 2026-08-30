@@ -1,5 +1,6 @@
-import math
 import json
+import math
+import time
 import traceback
 
 # Silent:
@@ -144,10 +145,15 @@ class QuickSwap:
 
     def cmd_QS_WAIT_IFS_IDLE(self, gcmd):
         if self.zmod_ifs.ifs:
-            if self.zmod_ifs.ifs_data.State != IFS_IDLE_STATE_VALUE:
+            if self.zmod_ifs.ifs_data.State != IFS_IDLE_STATE_VALUE or self.zmod_ifs.ret_command_id != 0 or self.zmod_ifs.command != 'F13':
                 if self.silent == SILENT_LEVEL_ALL:
                     self.gcode.respond_info('QuickSwap: Waiting for IFS to be idle')
-                self.zmod_ifs.wait_for_state(FFS_state=IFS_IDLE_STATE_VALUE)
+                while self.zmod_ifs.ret_command_id != 0 or self.zmod_ifs.command != 'F13':
+                    time.sleep(0.01)
+                while self.zmod_ifs.ifs_data.State != IFS_IDLE_STATE_VALUE:
+                    time.sleep(0.01)
+                if self.silent == SILENT_LEVEL_ALL:
+                    self.gcode.respond_info('QuickSwap: IFS idle detected')
                 
     def cmd_QS_CHANGE_ANALOG_FILAMENT(self, gcmd):
         status = self.gcode_move.get_status(self.reactor.monotonic())
@@ -564,6 +570,7 @@ class QuickSwap:
 
         cmds += [f"G1 E{-unload_distance} F{old_filament_info['filament_extruder_speed']}"]
         cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={unload_distance} SPEED={int(old_filament_info['filament_extruder_speed'] * speed_factor)} WAIT=0"]
+        cmds += ["M400"]
         cmds += ["_QS_WAIT_IFS_IDLE"]
 
         cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={old_filament_info['filament_unload_into_tube']} SPEED={int(old_filament_info['filament_ifs_speed'] * speed_factor)}"]
