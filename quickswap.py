@@ -25,6 +25,9 @@ DEBUG_LEVEL_SAVE_AND_EXECUTE = 1
 DEBUG_LEVEL_SAVE_AND_FALLBACK = 2
 DEBUG_LEVEL_INTERNAL = 3
 
+FFCONFIG = '/usr/prog/config/Adventurer5M.json'
+MAPPING_CONFIG = '/usr/data/config/mod_data/file.json'
+
 class QuickSwap:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -211,6 +214,12 @@ class QuickSwap:
 
         # Handle edge cases
 
+        # Target channel is empty - try to match to a different one, if none, error
+        if not self.zmod_ifs.ifs_data.get_port(target_channel):
+            target_channel = self._qs_get_switchover(target_channel)
+            if target_channel <= 0:
+                raise self.printer.command_error(f"Error: IFS reports channel {channel} is empty and no matching filament found")
+
         # Source channel is empty - purge if not empty at extruder; then skip unload
         if not self.zmod_ifs.ifs_data.get_port(old_channel):
             cmds += [f"IFS_F24 PRUTOK={new_channel} WAIT=0"]
@@ -225,12 +234,6 @@ class QuickSwap:
             else:
                 self.info(f'Old channel empty. Skipping unload.', cmds)
             skip_unload = True
-
-        # Target channel is empty - give error
-        # TODO: Attempt to find a match in a different channel first
-        if not self.zmod_ifs.ifs_data.get_port(target_channel):
-            self.info(f'Empty target channel detected', cmds)
-            raise self.printer.command_error(f"Error: IFS reports channel {channel} is empty")
 
         cmds += ["SAVE_GCODE_STATE NAME=qs_change_filament"]
         cmds += ["_DISABLE_SENSOR"]
@@ -572,13 +575,44 @@ class QuickSwap:
         cmds += ["RESTORE_GCODE_STATE NAME=nopoop_flatten"]
 
     def _qs_get_filament_mapping(self, channel):
-        with open('/usr/data/config/mod_data/file.json', 'r') as f:
+        with open(MAPPING_CONFIG, 'r') as f:
             mapping = json.load(f)
 
         if channel >= len(mapping):
             raise self.printer.command_error(f"Error: CHANNEL {channel} is out of range (max {len(mapping)-1})")
 
         return mapping[channel]
+
+    def _qs_get_switchover(self, target_channel)
+        new_channel = -1
+
+        with open(FFCONFIG, 'r') as f:
+            filament_config = json.load(f)['FFMInfo']
+        with open(MAPPING_CONFIG, 'r') as f:
+            mapping = json.load(f)
+
+        old_type = filament_config.get(f"ffmType{target_channel}", "PLA")
+        old_color = filament_config.get(f"ffmColor{target_channel}", "#000000")
+
+        for i in range(1, self.zmod_ifs.color_limit + 1):
+            if not zmod_ifs.get_port(i):
+                continue
+            this_type = filament_config.get(f'ffmType{i}', None)
+            this_color = filament_config.get(f'ffmColor{i}', None)
+
+            if old_type == this_type and old_color == this_color:
+                new_channel = i
+                break
+
+        if new_channel > 0:
+            for i in range(len(mapping)):
+                if mapping[i] == target_channel:
+                    mapping[i] = new_channel
+
+            with open(MAPPING_CONFIG, 'w') as f:
+                json.dump(mapping, f)
+
+        return new_channel
 
 def load_config(config):
     return QuickSwap(config)
