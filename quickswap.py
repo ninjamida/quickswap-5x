@@ -46,6 +46,7 @@ class QuickSwap:
 
         self.purge_step_length = config.getint('purge_step_length', 15)
         self.purge_finish_length = config.getint('purge_finish_length', 15)
+        self.ifs_flag_delay = config.getfloat('ifs_flag_delay', 2.5) # Need to see how low I can push this. Or even better - improve Z-Mod so it doesn't need to be so high.
 
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
@@ -53,6 +54,9 @@ class QuickSwap:
         self.gcode.register_command('_QS_WAIT_IFS_IDLE', self.cmd_QS_WAIT_IFS_IDLE)
         self.gcode.register_command('_QS_GENERATE_TEST', self.cmd_QS_GENERATE_TEST)
         self.gcode.register_command('_QS_CHANGE_ANALOG_FILAMENT', self.cmd_QS_CHANGE_ANALOG_FILAMENT)
+        self.gcode.register_command('_QS_IFS_ASYNC_COMMAND', self.cmd_QS_IFS_ASYNC_COMMAND)
+
+        self.ifs_flag_time = time.monotonic() - self.ifs_flag_delay
 
         # Fill with defaults for now. Load user's actual values in _handle_ready.
         max_z_velocity = 25.0
@@ -145,28 +149,48 @@ class QuickSwap:
 
     def cmd_QS_WAIT_IFS_IDLE(self, gcmd):
         if self.zmod_ifs.ifs:
-            if self.zmod_ifs.ifs_data.State != IFS_IDLE_STATE_VALUE or self.zmod_ifs.ret_command_id != 0 or self.zmod_ifs.command != 'F13':
+            need_wait = False
+            minimum_time = self.ifs_flag_time + self.ifs_flag_delay
+            time_diff = minimum_time - time.monotonic()
+            if self.zmod_ifs.ifs_data.State != IFS_IDLE_STATE_VALUE or time_diff > 0:
+                need_wait = True
+            if need_wait:
                 if self.silent == SILENT_LEVEL_ALL:
                     self.gcode.respond_info('QuickSwap: Waiting for IFS to be idle')
-                while self.zmod_ifs.ret_command_id != 0 or self.zmod_ifs.command != 'F13':
-                    time.sleep(0.01)
+                if time_diff > 0:
+                    time.sleep(time_diff)
                 while self.zmod_ifs.ifs_data.State != IFS_IDLE_STATE_VALUE:
                     time.sleep(0.01)
                 if self.silent == SILENT_LEVEL_ALL:
                     self.gcode.respond_info('QuickSwap: IFS idle detected')
-                
+
+    def cmd_QS_IFS_ASYNC_COMMAND(self, gcmd):
+        clear = gcmd.get_int('CLEAR', 0) != 0
+        cmd = gcmd.get('COMMAND', None)
+        if cmd != None:
+            if self.silent == SILENT_LEVEL_ALL:
+                self.gcode.respond_info(f'QuickSwap: IFS async command "{cmd}"')
+            with self.zmod_ifs._command_lock:
+                command_id = self.zmod_ifs._command_id + 1
+                self.zmod_ifs._command_id = command_id
+                self.zmod_ifs._command = f"{cmd}#{command_id}"
+        self.ifs_flag_time = time.monotonic()
+        if clear:
+            self.gcode.respond_info(f'QuickSwap: IFS async delay cleared')
+            self.ifs_flag_time -= self.ifs_flag_delay
+
     def cmd_QS_CHANGE_ANALOG_FILAMENT(self, gcmd):
         status = self.gcode_move.get_status(self.reactor.monotonic())
         initial_pos = status.get('gcode_position')
-        
+
         self.gcode.run_script_from_command('_A_CHANGE_FILAMENT SWITCHOVER=1')
         channel = self.zmod_ifs.get_current_channel_from_config()
         filament_info = self.zmod_ifs.get_prutok_config(channel)
-        
+
         drop_length = filament_info['filament_drop_length']
         extruder_speed = filament_info['filament_extruder_speed']
         initial_fan_speed = self.printer.lookup_object('fan_generic fanM106').get_status(self.reactor.monotonic())['speed']
-        
+
         self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=0\n_DISABLE_SENSOR')
         self.gcode.run_script_from_command(f'G1 E{drop_length} F{extruder_speed}')
         self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}\n_ENABLE_SENSOR')
@@ -242,12 +266,12 @@ class QuickSwap:
 
         if old_filament_info is None:
             old_filament_info = new_filament_info
-        
+
         if switchover:
             self.info(f'Changing filament on runout to physical channel {target_channel}', cmds, SILENT_LEVEL_PRIORITY)
         else:
             self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, SILENT_LEVEL_PRIORITY)
-            
+
         cmds += ["SAVE_GCODE_STATE NAME=qs_change_filament"]
 
         # Handle edge cases
@@ -263,7 +287,7 @@ class QuickSwap:
 
         # Source channel is empty - purge if not empty at extruder; then skip unload
         if not self.zmod_ifs.ifs_data.get_port(old_channel):
-            cmds += [f"IFS_F24 PRUTOK={target_channel} WAIT=0"]
+            cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{target_channel}'"]
             if self.zmod_ifs.get_extruder_sensor():
                 self.info(f'Old channel empty at IFS, loaded at extruder. Purging.', cmds)
                 if not (nopoop and layer_num >= 2):
@@ -288,6 +312,7 @@ class QuickSwap:
             self._qs_move_to_cutter(initial_pos, old_channel, old_filament_info, cmds)
 
             cmds += [f"G1 X{self.cut_x} F{self.cut_move_speed}"]
+            cmds += [f"G1 E-1 F{old_filament_info['filament_extruder_speed'] * 2}"]
 
             if nopoop and layer_num > 1:
                 self._qs_return_to_print(initial_pos, cmds)
@@ -315,8 +340,6 @@ class QuickSwap:
         cmds += ["_ENABLE_SENSOR"]
         cmds += ["IFS_MOTION_ON"]
         cmds += ["IFS_SWITCH_ON"]
-        cmds += ["_QS_WAIT_IFS_IDLE"]
-        cmds += ["IFS_F18 WAIT=0"]
         self.info(f'Filament change complete', cmds, SILENT_LEVEL_PRIORITY)
 
     def _qs_purge_old_filament(self, gcmd):
@@ -384,7 +407,7 @@ class QuickSwap:
         total_duration = sum(move[-1] for move in moves_to_cutter)
 
         unload_before_cut = old_filament_info['filament_unload_before_cutting']
-        extruder_speed = old_filament_info['filament_extruder_speed']
+        extruder_speed = old_filament_info['filament_extruder_speed'] * 2
 
         withdraw_duration = unload_before_cut / (extruder_speed / 60)
 
@@ -401,7 +424,8 @@ class QuickSwap:
                 extruder_move = 0
                 extruder_move_time = 0
                 if not done_ifs_grab:
-                    cmds += [f"IFS_F24 PRUTOK={old_channel} WAIT=0"]
+                    cmds += ["M400"]
+                    cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{old_channel}'"]
                     done_ifs_grab = True
             elif remaining_withdraw_duration >= move[4]:
                 extruder_move = move[4] * (extruder_speed / 60)
@@ -419,7 +443,8 @@ class QuickSwap:
             else:
                 split_point = self._get_move_split_point(initial_pos, [new_x, new_y, new_z], move[4], extruder_move_time)
                 cmds += [f"G1 {self._make_position_text(split_point)} E-{extruder_move:.2f} F{move[3]}"]
-                cmds += [f"IFS_F24 PRUTOK={old_channel} WAIT=0"]
+                cmds += [f"M400"]
+                cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{old_channel}'"]
                 cmds += [f"G1 {self._make_position_text(move)} F{move[3]}"]
                 done_ifs_grab = True
 
@@ -430,7 +455,8 @@ class QuickSwap:
             cmds += [f"G1 E{-extruder_move:.2f} F{extruder_speed}"]
 
         if not done_ifs_grab:
-            cmds += [f"IFS_F24 PRUTOK={old_channel} WAIT=0"]
+                cmds += [f"M400"]
+                cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{old_channel}'"]
 
     def _make_position_text(self, move):
         move_positions = []
@@ -564,14 +590,13 @@ class QuickSwap:
     def _qs_unload_old_filament(self, old_channel, old_filament_info, cmds):
         self.info(f'Unloading channel {old_channel}', cmds)
 
-        unload_distance = old_filament_info['filament_unload_after_cutting'] + old_filament_info['nozzle_cleaning_length']
+        unload_distance = old_filament_info['filament_unload_after_cutting'] + old_filament_info['nozzle_cleaning_length'] - 1
 
         speed_factor = float(self.gcode_move.get_status(self.reactor.monotonic()).get('speed_factor', 1.0))
 
         cmds += [f"G1 E{-unload_distance} F{old_filament_info['filament_extruder_speed']}"]
-        cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={unload_distance} SPEED={int(old_filament_info['filament_extruder_speed'] * speed_factor)} WAIT=0"]
+        cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={unload_distance} SPEED={int(old_filament_info['filament_extruder_speed'] * speed_factor)}"]
         cmds += ["M400"]
-        cmds += ["_QS_WAIT_IFS_IDLE"]
 
         cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={old_filament_info['filament_unload_into_tube']} SPEED={int(old_filament_info['filament_ifs_speed'] * speed_factor)}"]
 
@@ -589,12 +614,11 @@ class QuickSwap:
         cmds += [f"M104 S{new_filament_info['temp']}"]
 
         insert_length = 12 + old_filament_info['filament_unload_before_cutting']
-        cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={insert_length} SPEED={int(new_filament_info['filament_extruder_speed'] * speed_factor)} WAIT=0 CHECK=0"]
         cmds += [f"G1 E{insert_length} F{new_filament_info['filament_extruder_speed']}"]
+        cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={insert_length} SPEED={int(new_filament_info['filament_extruder_speed'] * speed_factor)} SLEEP=1"]
         cmds += ["M400"]
 
-        cmds += ["_QS_WAIT_IFS_IDLE"]
-        cmds += [f"IFS_F39 PRUTOK={new_channel} WAIT=0"]
+        cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F39 C{new_channel}'"]
         cmds += [f"_SET_EXTRUDER_SLOT SLOT={new_channel}"]
         cmds += [f"SDCARD_SET_CHANNEL CHANNEL={new_channel}"]
         cmds += ["SDCARD_ENABLE_FFM ENABLE=1"]
