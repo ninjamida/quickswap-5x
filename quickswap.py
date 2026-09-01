@@ -180,26 +180,52 @@ class QuickSwap:
             self.ifs_flag_time -= self.ifs_flag_delay
 
     def cmd_QS_CHANGE_ANALOG_FILAMENT(self, gcmd):
-        status = self.gcode_move.get_status(self.reactor.monotonic())
-        initial_pos = status.get('gcode_position')
+        try:
+            self._set_vars()
+            status = self.gcode_move.get_status(self.reactor.monotonic())
+            initial_pos = status.get('gcode_position')
 
-        self.gcode.run_script_from_command('_A_CHANGE_FILAMENT SWITCHOVER=1')
-        channel = self.zmod_ifs.get_current_channel_from_config()
-        filament_info = self.zmod_ifs.get_prutok_config(channel)
+            self.gcode.run_script_from_command('_A_CHANGE_FILAMENT SWITCHOVER=1')
+            channel = self.zmod_ifs.get_current_channel_from_config()
+            filament_info = self.zmod_ifs.get_prutok_config(channel)
 
-        drop_length = filament_info['filament_drop_length']
-        extruder_speed = filament_info['filament_extruder_speed']
-        initial_fan_speed = self.printer.lookup_object('fan_generic fanM106').get_status(self.reactor.monotonic())['speed']
+            drop_length = filament_info['filament_drop_length']
+            extruder_speed = filament_info['filament_extruder_speed']
+            initial_fan_speed = self.printer.lookup_object('fan_generic fanM106').get_status(self.reactor.monotonic())['speed']
 
-        self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=0\n_DISABLE_SENSOR')
-        self.gcode.run_script_from_command(f'G1 E{drop_length} F{extruder_speed}')
-        self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}\n_ENABLE_SENSOR')
-        self.gcode.run_script_from_command(f'G1 X{initial_pos[0]} Y{initial_pos[1]} F{self.travel_move_speed}')
-        self.gcode.run_script_from_command(f'G1 Z{initial_pos[2]} F{self.z_travel_move_speed}')
-        self.gcode.run_script_from_command('RESTORE_GCODE_STATE NAME=qs_change_filament')
+            self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=0\n_DISABLE_SENSOR')
+            self.gcode.run_script_from_command(f'G1 E{drop_length} F{extruder_speed}')
+            self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}\n_ENABLE_SENSOR')
+            self.gcode.run_script_from_command(f'G1 X{initial_pos[0]} Y{initial_pos[1]} F{self.travel_move_speed}')
+            self.gcode.run_script_from_command(f'G1 Z{initial_pos[2]} F{self.z_travel_move_speed}')
+            self.gcode.run_script_from_command('RESTORE_GCODE_STATE NAME=qs_change_filament')
+        except Exception as e:
+            msg = f"!! (QuickSwap) Filament switchover error: {str(e)}\nPausing print"
+            gcmd.respond_raw(f"{msg}")
+            gcmd.respond_raw(f"tgalarm_photo {msg}")
+            if self.debug <= DEBUG_LEVEL_SAVE_AND_EXECUTE:
+                try:
+                    self.gcode.run_script_from_command("IFS_F112")
+                    self.gcode.run_script_from_command("IFS_F18")
+                except:
+                    pass
+                pause_resume = self.printer.lookup_object('pause_resume')
+                pause_resume.send_pause_command()
+                self.gcode.run_script_from_command("PAUSE\nM400\n")
+            if self.debug >= DEBUG_LEVEL_SAVE_AND_EXECUTE:
+                try:
+                    cmds += ['# Interrupted by error']
+                    e_filename, e_line, e_func, e_text = traceback.extract_tb(e.__traceback__)[-1]
+                    cmds += [f'# {e_filename}, function {e_func} at line {e_line}']
+                    cmds += [f'# Message: {e_text}']
+                    with open('/usr/data/config/mod_data/quickswap_debug.txt', 'w') as f:
+                        f.write('\n'.join(cmds))
+                except:
+                    pass
 
     def cmd_QS_CHANGE_FILAMENT(self, gcmd):
         try:
+            self._set_vars()
             cmds = []
             channel = gcmd.get_int('CHANNEL', 0)
             switchover = gcmd.get_int('SWITCHOVER', 0)
@@ -596,8 +622,6 @@ class QuickSwap:
 
         cmds += [f"G1 E{-unload_distance} F{old_filament_info['filament_extruder_speed']}"]
         cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={unload_distance} SPEED={int(old_filament_info['filament_extruder_speed'] * speed_factor)}"]
-        cmds += ["M400"]
-
         cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={old_filament_info['filament_unload_into_tube']} SPEED={int(old_filament_info['filament_ifs_speed'] * speed_factor)}"]
 
     def _qs_load_new_filament(self, old_filament_info, new_channel, new_filament_info, skip_unload, cmds):
@@ -622,7 +646,6 @@ class QuickSwap:
         cmds += [f"_SET_EXTRUDER_SLOT SLOT={new_channel}"]
         cmds += [f"SDCARD_SET_CHANNEL CHANNEL={new_channel}"]
         cmds += ["SDCARD_ENABLE_FFM ENABLE=1"]
-        cmds += ["M400"]
 
     def _qs_nopoop_wipe(self, cmds):
         self.info(f'Performing nopoop wipe', cmds)
