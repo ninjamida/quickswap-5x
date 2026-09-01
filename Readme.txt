@@ -1,9 +1,39 @@
 QuickSwap is a plugin to speed up color changes on AD5X printers running Z-Mod.
 
+As it is still an early work-in-progress, QuickSwap has not yet been submitted
+to Z-Mod's plugin list. You will need to add it manually to user.moonraker.conf
+(in mod_data):
+
+[update_manager quickswap]
+type: git_repo
+channel: dev
+path: /root/printer_data/config/mod_data/plugins/quickswap
+origin: https://github.com/ninjamida/quickswap-5x.git
+is_system_service: False
+primary_branch: master
+
+WARNINGS:
+- Not yet tested with nopoop (only with slicer-controlled poop)
+- Filament runout switchover is not yet tested
+- Not yet tested *without* an IFS Jacker
+- Not yet tested (and I likely won't test it myself) with Klipper 13
+- Use at your own risk
+
+
+
 Compatibility requirements:
 - Native screen must be disabled. Any alternative is fine.
 - Must not be using Bambufy or LessWaste plugins.
 - Must use either Nopoop or Slicer-Controlled Poop.
+
+Z-Mod version compatibility:
+- [Future version with zmod_ifs.py improvements] - Recommended for best results
+- Z-Mod 1.7.3 - Minimum if using Klipper 13
+- Z-Mod 1.7.2 - Acceptable for Klipper 12
+- Z-Mod 1.7.1 or earlier - Might work, untested
+You can use it with older Z-Mod + Klipper 13, but you will need to create the
+symlink in the "extras" dir to quickswap.py manually. Z-Mod 1.7.3 changes the
+location of this dir, and the install script only supports the new location.
 
 And to avoid doubt:
 - YES, automatic switch on runout works, including in multicolor prints
