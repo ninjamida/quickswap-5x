@@ -40,14 +40,28 @@ And to avoid doubt:
 - YES, compatible with IFS Jacker
 
 For best results:
+
+** In user.cfg **
+# Do not use these until z_ad5x PR #13 has been merged (or merge it manually
+# on your own printer).
+[zmod_ifs]
+receive_delay: 0
+next_cmd_delay: 0.02
+send_ff_terminator: False
+
+** In filament.json **
 - Set filament_unload_before_cutting to 20
-- Set nozzle_cleaning_length to 20
+- Set nozzle_cleaning_length to (25 - [filament_unload_after_cutting])
 - Set filament_unload_into_tube to 90 (you can try reducing it - the filament
   should end up just barely inside the 4-in-1 adapter after being withdrawn)
 - Experiment with filament_extruder_speed and filament_ifs_speed and see if you
   can push them higher for certain material types
+  
+** In your slicer **
 - Tune your flush volumes
 - Make use of purging to infill / etc to reduce poop or prime tower time
+
+
 
 How it works:
 The primary way QuickSwap saves time, is by performing the unload-before-cut and
