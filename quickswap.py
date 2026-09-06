@@ -273,7 +273,6 @@ class QuickSwap:
             cmds += [f'# {msg}']
 
     def _generate_quickswap_filament_gcode(self, unmapped_target_channel, switchover, cmds):
-        # TODO: Skip entire process if full color change disabled, source/target are same, and no runout condition
         status = self.gcode_move.get_status(self.reactor.monotonic())
         old_channel = self.zmod_ifs.get_current_channel_from_config()
         if switchover:
@@ -282,9 +281,14 @@ class QuickSwap:
             target_channel = self._qs_get_filament_mapping(unmapped_target_channel)
         skip_unload = False
         already_at_trash = False
+        
+        if old_channel == target_channel and not switchover:
+            if self.save_variables.allVariables.get('always_full_color_change') == 0:
+                self.info('Target filament already loaded', SILENT_LEVEL_PRIORITY)
+                return
 
         nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0 and not switchover
-        layer_num = self.print_stats.get_status(self.reactor.monotonic()).get('info', {}).get('current_layer', 1)
+        layer_num = self.print_stats.get_status(self.reactor.monotonic()).get('info', {}).get('current_layer', None)
         initial_pos = status.get('gcode_position')
 
         old_filament_info = self.zmod_ifs.get_prutok_config(old_channel)
@@ -297,6 +301,10 @@ class QuickSwap:
             self.info(f'Changing filament on runout to physical channel {target_channel}', cmds, SILENT_LEVEL_PRIORITY)
         else:
             self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, SILENT_LEVEL_PRIORITY)
+            
+        if layer_num is None: # This will happen if the routine is triggered while not printing
+            self.info(f'Current layer number could not be retrieved. Using first layer behavior.', cmds, SILENT_LEVEL_PRIORITY)
+            layer_num = 1
 
         cmds += ["SAVE_GCODE_STATE NAME=qs_change_filament"]
 
@@ -465,10 +473,10 @@ class QuickSwap:
             if extruder_move_time <= 0 or round(extruder_move, 2) <= 0:
                 cmds += [f"G1 {self._make_position_text(move)} F{move[3]}"]
             elif extruder_move_time == move[4]:
-                cmds += [f"G1 {self._make_position_text(move)} E-{extruder_move:.2f} F{move[3]}"]
+                cmds += [f"G1 {self._make_position_text(move)} E-{extruder_move} F{move[3]}"]
             else:
                 split_point = self._get_move_split_point(initial_pos, [new_x, new_y, new_z], move[4], extruder_move_time)
-                cmds += [f"G1 {self._make_position_text(split_point)} E-{extruder_move:.2f} F{move[3]}"]
+                cmds += [f"G1 {self._make_position_text(split_point)} E-{extruder_move} F{move[3]}"]
                 cmds += [f"M400"]
                 cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{old_channel}'"]
                 cmds += [f"G1 {self._make_position_text(move)} F{move[3]}"]
@@ -478,7 +486,7 @@ class QuickSwap:
 
         if remaining_withdraw_duration > 0:
             extruder_move = remaining_withdraw_duration * (extruder_speed / 60)
-            cmds += [f"G1 E{-extruder_move:.2f} F{extruder_speed}"]
+            cmds += [f"G1 E{-extruder_move} F{extruder_speed}"]
 
         if not done_ifs_grab:
                 cmds += [f"M400"]
@@ -587,8 +595,8 @@ class QuickSwap:
     def _qs_return_to_print(self, initial_pos, cmds):
         # Ditto.
         self.info(f'Returning to print', cmds)
-        relative_to_center_x = current_pos[0] - self.x_center
-        relative_to_center_y = current_pos[1] - self.y_center
+        relative_to_center_x = initial_pos[0] - self.x_center
+        relative_to_center_y = initial_pos[1] - self.y_center
         closer_on_x = abs(relative_to_center_x) > abs(relative_to_center_y)
 
         cmds += [f"G1 X{self.cut_prepare_x} F{self.cut_move_speed}"]
@@ -596,21 +604,21 @@ class QuickSwap:
 
         if closer_on_x or relative_to_center_y > 0:
             if relative_to_center_x <= 0:
-                cmds += ["G1 X{self.x_left} F{self.travel_move_speed}"]
+                cmds += [f"G1 X{self.x_left} F{self.travel_move_speed}"]
             else:
-                cmds += ["G1 X{self.x_right} F{self.travel_move_speed}"]
+                cmds += [f"G1 X{self.x_right} F{self.travel_move_speed}"]
 
             if closer_on_x:
-                cmds += ["G1 Y{initial_pos[1]} F{self.travel_move_speed}"]
+                cmds += [f"G1 Y{initial_pos[1]} F{self.travel_move_speed}"]
             else:
-                cmds += ["G1 Y{self.y_back} F{self.travel_move_speed}"]
+                cmds += [f"G1 Y{self.y_back} F{self.travel_move_speed}"]
 
-        cmds += ["G1 X{initial_pos[0]} F{self.travel_move_speed}"]
+        cmds += [f"G1 X{initial_pos[0]} F{self.travel_move_speed}"]
 
         if not closer_on_x:
-            cmds += ["G1 Y{initial_pos[1]} F{self.travel_move_speed}"]
+            cmds += [f"G1 Y{initial_pos[1]} F{self.travel_move_speed}"]
 
-        cmds += ["G1 Z{initial_pos[2]} F{self.z_travel_move_speed}"]
+        cmds += [f"G1 Z{initial_pos[2]} F{self.z_travel_move_speed}"]
 
 
     def _qs_unload_old_filament(self, old_channel, old_filament_info, cmds):
@@ -649,7 +657,6 @@ class QuickSwap:
 
     def _qs_nopoop_wipe(self, cmds):
         self.info(f'Performing nopoop wipe', cmds)
-        cmds += ["SAVE_GCODE_STATE NAME=nopoop_flatten"]
         cmds += ["G91"]
         cmds += ["G1 X0.75 Y0.75 F600"]
         cmds += ["G1 X-0.75 Y0.75"]
@@ -660,7 +667,6 @@ class QuickSwap:
         cmds += ["G1 X-1.5 Y-1.5"]
         cmds += ["G1 X0.75 Y-0.75"]
         cmds += ["G1 X0.75 Y0.75"]
-        cmds += ["RESTORE_GCODE_STATE NAME=nopoop_flatten"]
 
     def _qs_get_filament_mapping(self, channel):
         with open(MAPPING_CONFIG, 'r') as f:
