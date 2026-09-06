@@ -15,7 +15,6 @@ primary_branch: master
 WARNINGS:
 - Not yet tested with nopoop (only with slicer-controlled poop)
 - Filament runout switchover is not yet tested
-- Not yet tested *without* an IFS Jacker
 - Not yet tested (and I likely won't test it myself) with Klipper 13
 - Use at your own risk
 
@@ -27,25 +26,24 @@ Compatibility requirements:
 - Must use either Nopoop or Slicer-Controlled Poop.
 
 Z-Mod version compatibility:
-- [Future version with zmod_ifs.py improvements] - Recommended for best results
-- Z-Mod 1.7.3 - Minimum if using Klipper 13
-- Z-Mod 1.7.2 - Acceptable for Klipper 12
-- Z-Mod 1.7.1 or earlier - Might work, untested
+- Z-Mod 1.7.3-41 or higher :: Recommended
+- Z-Mod 1.7.3-any :: Minimum if using Klipper 13
+- Z-Mod 1.7.2-any :: Acceptable for Klipper 12
+- Z-Mod 1.7.1-any or earlier :: Might work, untested
 You can use it with older Z-Mod + Klipper 13, but you will need to create the
 symlink in the "extras" dir to quickswap.py manually. Z-Mod 1.7.3 changes the
 location of this dir, and the install script only supports the new location.
 
 And to avoid doubt:
-- YES, automatic switch on runout works, including in multicolor prints
-- YES, compatible with IFS Jacker
+- YES, automatic switch on runout should work (untested), including in
+  multicolor prints
+- YES, compatible (tested) with IFS Jacker
 
 For best results:
 
 ** In user.cfg **
-# Do not use these until z_ad5x PR #13 has been merged (or merge it manually
-# on your own printer).
+# Must have Z-Mod 1.7.3-41 or higher to use these settings.
 [zmod_ifs]
-receive_delay: 0
 next_cmd_delay: 0.02
 send_ff_terminator: False
 
