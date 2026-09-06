@@ -3,28 +3,14 @@ import math
 import time
 import traceback
 
-# Silent:
-#  0 - Display all messages
-#  1 - Display start and end message only
-#  2 - Do not display any messages
-
-# Debug:
-#  0 - Non-debug mode
-#  1 - Extra debug info output (if Silent = 0)
-#  2 - Save generated gcode to file and execute it (+ extra info)
-#  3 - Save generated gcode to file, execute stock change (+ extra info)
-#  4 - Save generated gcode to file, execute nothing (For internal use)
-
-IFS_IDLE_STATE_VALUE = 5
+IFS_IDLE_STATE_VALUE = 5 # FFS_READY
 
 SILENT_LEVEL_ALL = 0
 SILENT_LEVEL_PRIORITY = 1
 SILENT_LEVEL_NONE = 2
 
 DEBUG_LEVEL_NONE = 0
-DEBUG_LEVEL_SAVE_AND_EXECUTE = 1
-DEBUG_LEVEL_SAVE_AND_FALLBACK = 2
-DEBUG_LEVEL_INTERNAL = 3
+DEBUG_LEVEL_INTERNAL = 1
 
 FFCONFIG = '/usr/prog/config/Adventurer5M.json'
 MAPPING_CONFIG = '/usr/data/config/mod_data/file.json'
@@ -41,12 +27,13 @@ class QuickSwap:
         self.print_stats = None # Filled during _handle_ready
         self.toolhead = None # Filled during _handle_ready
 
-        self.silent = config.getint('silent', SILENT_LEVEL_ALL)
-        self.debug = config.getint('debug', DEBUG_LEVEL_NONE)
+        self.debug = DEBUG_LEVEL_NONE
 
+        self.silent = config.getint('silent', SILENT_LEVEL_ALL)
         self.purge_step_length = config.getint('purge_step_length', 15)
         self.purge_finish_length = config.getint('purge_finish_length', 15)
-        self.ifs_flag_delay = config.getfloat('ifs_flag_delay', 2.5) # Need to see how low I can push this. Or even better - improve Z-Mod so it doesn't need to be so high.
+        self.ifs_flag_delay = config.getfloat('ifs_flag_delay', 1.0)
+        self.insert_base_distance = config.getfloat('insert_base_distance', 15.0)
 
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
@@ -203,7 +190,7 @@ class QuickSwap:
             msg = f"!! (QuickSwap) Filament switchover error: {str(e)}\nPausing print"
             gcmd.respond_raw(f"{msg}")
             gcmd.respond_raw(f"tgalarm_photo {msg}")
-            if self.debug <= DEBUG_LEVEL_SAVE_AND_EXECUTE:
+            if self.debug == DEBUG_LEVEL_NONE:
                 try:
                     self.gcode.run_script_from_command("IFS_F112")
                     self.gcode.run_script_from_command("IFS_F18")
@@ -212,7 +199,7 @@ class QuickSwap:
                 pause_resume = self.printer.lookup_object('pause_resume')
                 pause_resume.send_pause_command()
                 self.gcode.run_script_from_command("PAUSE\nM400\n")
-            if self.debug >= DEBUG_LEVEL_SAVE_AND_EXECUTE:
+            else:
                 try:
                     cmds += ['# Interrupted by error']
                     e_filename, e_line, e_func, e_text = traceback.extract_tb(e.__traceback__)[-1]
@@ -231,20 +218,16 @@ class QuickSwap:
             switchover = gcmd.get_int('SWITCHOVER', 0)
             self._generate_quickswap_filament_gcode(channel, switchover != 0, cmds)
 
-            if self.debug >= DEBUG_LEVEL_SAVE_AND_EXECUTE:
+            if self.debug == DEBUG_LEVEL_INTERNAL:
                 with open('/usr/data/config/mod_data/quickswap_debug.txt', 'w') as f:
                     f.write('\n'.join(cmds))
-
-            if self.debug <= DEBUG_LEVEL_SAVE_AND_EXECUTE:
+            else:
                 self.gcode.run_script_from_command('\n'.join(cmds))
-
-            if self.debug == DEBUG_LEVEL_SAVE_AND_FALLBACK:
-                self.gcode.run_script_from_command(f'_QS_ORIG_A_CHANGE_FILAMENT CHANNEL={channel} RESTORE_POSITION=1 RESTORE_TEMP=1')
         except Exception as e:
             msg = f"!! (QuickSwap) Filament change error: {str(e)}\nPausing print"
             gcmd.respond_raw(f"{msg}")
             gcmd.respond_raw(f"tgalarm_photo {msg}")
-            if self.debug <= DEBUG_LEVEL_SAVE_AND_EXECUTE:
+            if self.debug == DEBUG_LEVEL_NONE:
                 try:
                     self.gcode.run_script_from_command("IFS_F112")
                     self.gcode.run_script_from_command("IFS_F18")
@@ -253,7 +236,7 @@ class QuickSwap:
                 pause_resume = self.printer.lookup_object('pause_resume')
                 pause_resume.send_pause_command()
                 self.gcode.run_script_from_command("PAUSE\nM400\n")
-            if self.debug >= DEBUG_LEVEL_SAVE_AND_EXECUTE:
+            else:
                 try:
                     cmds += ['# Interrupted by error']
                     e_filename, e_line, e_func, e_text = traceback.extract_tb(e.__traceback__)[-1]
@@ -281,7 +264,7 @@ class QuickSwap:
             target_channel = self._qs_get_filament_mapping(unmapped_target_channel)
         skip_unload = False
         already_at_trash = False
-        
+
         if old_channel == target_channel and not switchover:
             if self.save_variables.allVariables.get('always_full_color_change') == 0:
                 self.info('Target filament already loaded', SILENT_LEVEL_PRIORITY)
@@ -301,7 +284,7 @@ class QuickSwap:
             self.info(f'Changing filament on runout to physical channel {target_channel}', cmds, SILENT_LEVEL_PRIORITY)
         else:
             self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, SILENT_LEVEL_PRIORITY)
-            
+
         if layer_num is None: # This will happen if the routine is triggered while not printing
             self.info(f'Current layer number could not be retrieved. Using first layer behavior.', cmds, SILENT_LEVEL_PRIORITY)
             layer_num = 1
@@ -629,7 +612,7 @@ class QuickSwap:
         speed_factor = float(self.gcode_move.get_status(self.reactor.monotonic()).get('speed_factor', 1.0))
 
         cmds += [f"G1 E{-unload_distance} F{old_filament_info['filament_extruder_speed']}"]
-        cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={unload_distance} SPEED={int(old_filament_info['filament_extruder_speed'] * speed_factor)}"]
+        cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={round(unload_distance)} SPEED={int(old_filament_info['filament_extruder_speed'] * speed_factor)}"]
         cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={old_filament_info['filament_unload_into_tube']} SPEED={int(old_filament_info['filament_ifs_speed'] * speed_factor)}"]
 
     def _qs_load_new_filament(self, old_filament_info, new_channel, new_filament_info, skip_unload, cmds):
@@ -645,9 +628,9 @@ class QuickSwap:
 
         cmds += [f"M104 S{new_filament_info['temp']}"]
 
-        insert_length = 12 + old_filament_info['filament_unload_before_cutting']
+        insert_length = self.insert_base_distance + old_filament_info['filament_unload_before_cutting']
         cmds += [f"G1 E{insert_length} F{new_filament_info['filament_extruder_speed']}"]
-        cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={insert_length} SPEED={int(new_filament_info['filament_extruder_speed'] * speed_factor)} SLEEP=1"]
+        cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={round(insert_length)} SPEED={int(new_filament_info['filament_extruder_speed'] * speed_factor)} SLEEP=1"]
         cmds += ["M400"]
 
         cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F39 C{new_channel}'"]
