@@ -43,7 +43,6 @@ class QuickSwap:
         self.gcode.register_command('_QS_PURGE_OLD_FILAMENT', self.cmd_QS_PURGE_OLD_FILAMENT)
         self.gcode.register_command('_QS_WAIT_IFS_IDLE', self.cmd_QS_WAIT_IFS_IDLE)
         self.gcode.register_command('_QS_GENERATE_TEST', self.cmd_QS_GENERATE_TEST)
-        self.gcode.register_command('_QS_CHANGE_ANALOG_FILAMENT', self.cmd_QS_CHANGE_ANALOG_FILAMENT)
         self.gcode.register_command('_QS_IFS_ASYNC_COMMAND', self.cmd_QS_IFS_ASYNC_COMMAND)
 
         self.ifs_flag_time = time.monotonic() - self.ifs_flag_delay
@@ -167,40 +166,6 @@ class QuickSwap:
             self.gcode.respond_info(f'QuickSwap: IFS async delay cleared')
             self.ifs_flag_time -= self.ifs_flag_delay
 
-    def cmd_QS_CHANGE_ANALOG_FILAMENT(self, gcmd):
-        try:
-            self._set_vars()
-            status = self.gcode_move.get_status(self.reactor.monotonic())
-            initial_pos = status.get('gcode_position')
-
-            self.gcode.run_script_from_command('_A_CHANGE_FILAMENT SWITCHOVER=1')
-            self.gcode.run_script_from_command(f'G1 X{initial_pos[0]} Y{initial_pos[1]} F{self.travel_move_speed}')
-            self.gcode.run_script_from_command(f'G1 Z{initial_pos[2]} F{self.z_travel_move_speed}')
-            self.gcode.run_script_from_command('RESUME')
-        except Exception as e:
-            msg = f"!! (QuickSwap) Filament switchover error: {str(e)}\nPausing print"
-            gcmd.respond_raw(f"{msg}")
-            gcmd.respond_raw(f"tgalarm_photo {msg}")
-            if self.debug == DEBUG_LEVEL_NONE:
-                try:
-                    self.gcode.run_script_from_command("IFS_F112")
-                    self.gcode.run_script_from_command("IFS_F18")
-                except:
-                    pass
-                pause_resume = self.printer.lookup_object('pause_resume')
-                pause_resume.send_pause_command()
-                self.gcode.run_script_from_command("PAUSE\nM400\n")
-            else:
-                try:
-                    cmds += ['# Interrupted by error']
-                    e_filename, e_line, e_func, e_text = traceback.extract_tb(e.__traceback__)[-1]
-                    cmds += [f'# {e_filename}, function {e_func} at line {e_line}']
-                    cmds += [f'# Message: {e_text}']
-                    with open('/usr/data/config/mod_data/quickswap_debug.txt', 'w') as f:
-                        f.write('\n'.join(cmds))
-                except:
-                    pass
-
     def cmd_QS_PURGE_OLD_FILAMENT(self, gcmd):
         status = self.gcode_move.get_status(self.reactor.monotonic())
         initial_pos = status.get('gcode_position')
@@ -262,8 +227,7 @@ class QuickSwap:
             self._set_vars()
             cmds = []
             channel = gcmd.get_int('CHANNEL', 0)
-            switchover = gcmd.get_int('SWITCHOVER', 0)
-            self._generate_quickswap_filament_gcode(channel, switchover != 0, cmds)
+            self._generate_quickswap_filament_gcode(channel, cmds)
 
             if self.debug == DEBUG_LEVEL_INTERNAL:
                 with open('/usr/data/config/mod_data/quickswap_debug.txt', 'w') as f:
@@ -302,22 +266,19 @@ class QuickSwap:
         if self.debug > DEBUG_LEVEL_NONE:
             cmds += [f'# {msg}']
 
-    def _generate_quickswap_filament_gcode(self, unmapped_target_channel, switchover, cmds):
+    def _generate_quickswap_filament_gcode(self, unmapped_target_channel, cmds):
         status = self.gcode_move.get_status(self.reactor.monotonic())
         old_channel = self.zmod_ifs.get_current_channel_from_config()
-        if switchover:
-            target_channel = old_channel
-        else:
-            target_channel = self._qs_get_filament_mapping(unmapped_target_channel)
+        target_channel = self._qs_get_filament_mapping(unmapped_target_channel)
         skip_unload = False
         already_at_trash = False
 
-        if old_channel == target_channel and not switchover:
+        if old_channel == target_channel:
             if self.save_variables.allVariables.get('always_full_color_change') == 0:
                 self.info('Target filament already loaded', SILENT_LEVEL_PRIORITY)
                 return
 
-        nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0 and not switchover
+        nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0
         layer_num = self.print_stats.get_status(self.reactor.monotonic()).get('info', {}).get('current_layer', None)
         initial_pos = status.get('gcode_position')
 
@@ -327,10 +288,7 @@ class QuickSwap:
         if old_filament_info is None:
             old_filament_info = new_filament_info
 
-        if switchover:
-            self.info(f'Changing filament on runout to physical channel {target_channel}', cmds, SILENT_LEVEL_PRIORITY)
-        else:
-            self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, SILENT_LEVEL_PRIORITY)
+        self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, SILENT_LEVEL_PRIORITY)
 
         if layer_num is None: # This will happen if the routine is triggered while not printing
             self.info(f'Current layer number could not be retrieved. Using first layer behavior.', cmds, SILENT_LEVEL_PRIORITY)
@@ -350,19 +308,16 @@ class QuickSwap:
             target_channel = new_target_channel
 
         # Source channel is empty - purge if not empty at extruder; then skip unload
-        if switchover or not self.zmod_ifs.ifs_data.get_port(old_channel):
+        if not self.zmod_ifs.ifs_data.get_port(old_channel):
             cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{target_channel}'"]
             skip_unload = True
-            if switchover:
+            if self.zmod_ifs.get_extruder_sensor():
+                self.info(f'Old channel empty at IFS, loaded at extruder. Purging.', cmds)
+                purge_cmd = f"_QS_PURGE_OLD_FILAMENT TUBE_LENGTH={old_filament_info['filament_tube_length']} DROP_LENGTH={old_filament_info['filament_drop_length']} DROP_SPEED={old_filament_info['filament_extruder_speed']} EXTRA_PURGE={old_filament_info['nozzle_cleaning_length'] + old_filament_info['filament_unload_after_cutting']}"
                 already_at_trash = True
+                cmds += [purge_cmd]
             else:
-                if self.zmod_ifs.get_extruder_sensor():
-                    self.info(f'Old channel empty at IFS, loaded at extruder. Purging.', cmds)
-                    purge_cmd = f"_QS_PURGE_OLD_FILAMENT TUBE_LENGTH={old_filament_info['filament_tube_length']} DROP_LENGTH={old_filament_info['filament_drop_length']} DROP_SPEED={old_filament_info['filament_extruder_speed']} EXTRA_PURGE={old_filament_info['nozzle_cleaning_length'] + old_filament_info['filament_unload_after_cutting']}"
-                    already_at_trash = True
-                    cmds += [purge_cmd]
-                else:
-                    self.info(f'Old channel empty. Skipping unload.', cmds)
+                self.info(f'Old channel empty. Skipping unload.', cmds)
 
         cmds += ["_DISABLE_SENSOR"]
         cmds += ["G90"] # Absolute
