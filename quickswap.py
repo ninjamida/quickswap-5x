@@ -38,6 +38,7 @@ class QuickSwap:
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
         self.gcode.register_command('_QS_CHANGE_FILAMENT', self.cmd_QS_CHANGE_FILAMENT)
+        self.gcode.register_command('_QS_PURGE_OLD_FILAMENT', self.cmd_QS_PURGE_OLD_FILAMENT)
         self.gcode.register_command('_QS_WAIT_IFS_IDLE', self.cmd_QS_WAIT_IFS_IDLE)
         self.gcode.register_command('_QS_GENERATE_TEST', self.cmd_QS_GENERATE_TEST)
         self.gcode.register_command('_QS_CHANGE_ANALOG_FILAMENT', self.cmd_QS_CHANGE_ANALOG_FILAMENT)
@@ -182,7 +183,7 @@ class QuickSwap:
 
             self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=0\n_DISABLE_SENSOR')
             self.gcode.run_script_from_command(f'G1 E{drop_length} F{extruder_speed}')
-            self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}\n_ENABLE_SENSOR')
+            self.gcode.run_script_from_command(f'SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}\n_ENABLE_SENSOR')
             self.gcode.run_script_from_command(f'G1 X{initial_pos[0]} Y{initial_pos[1]} F{self.travel_move_speed}')
             self.gcode.run_script_from_command(f'G1 Z{initial_pos[2]} F{self.z_travel_move_speed}')
             self.gcode.run_script_from_command('RESTORE_GCODE_STATE NAME=qs_change_filament')
@@ -209,6 +210,62 @@ class QuickSwap:
                         f.write('\n'.join(cmds))
                 except:
                     pass
+
+    def cmd_QS_PURGE_OLD_FILAMENT(self, gcmd):
+        status = self.gcode_move.get_status(self.reactor.monotonic())
+        initial_pos = status.get('gcode_position')
+        initial_fan_speed = self.printer.lookup_object('fan_generic fanM106').get_status(self.reactor.monotonic())['speed']
+
+        tube_length = gcmd.get_int('TUBE_LENGTH')
+        drop_length = gcmd.get_int('DROP_LENGTH')
+        drop_speed = gcmd.get_int('DROP_SPEED')
+        extra_purge = gcmd.get_int('EXTRA_PURGE')
+
+        return_to_print = gcmd.get_int('RETURN', 0) != 0
+
+        self.gcode.run_script_from_command("_DISABLE_SENSOR")
+        self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=0')
+
+        trash_cmds = []
+        self._qs_move_trash_direct(initial_pos, trash_cmds)
+        self.gcode.run_script_from_command('\n'.join(trash_cmds))
+
+        remaining_purge_length = tube_length
+        remaining_poop_length = drop_length
+        done_grip = False
+
+        while remaining_purge_length > 0:
+            if not self.zmod_ifs.get_extruder_sensor():
+                remaining_purge_length = min(remaining_purge_length, self.purge_finish_length + extra_purge)
+                remaining_poop_length = remaining_purge_length
+                this_extrude_length = remaining_purge_length
+            else:
+                this_extrude_length = min(self.purge_step_length, remaining_poop_length, remaining_purge_length)
+
+            self.gcode.run_script_from_command(f'G1 E{this_extrude_length} F{drop_speed}\nM400')
+            remaining_poop_length -= this_extrude_length
+            remaining_purge_length -= this_extrude_length
+
+            if remaining_purge_length <= 0 or remaining_poop_length <= 0:
+                self.gcode.run_script_from_command(f'SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED=0\nG92 E0')
+                remaining_poop_length = drop_length
+                if remaining_purge_length > 0:
+                    self.gcode.run_script_from_command('_GOTO_TRASH')
+
+        if self.zmod_ifs.get_extruder_sensor():
+            self.gcode.run_script_from_command('_GOTO_TRASH')
+            if self.zmod_ifs.get_extruder_sensor():
+                raise self.printer.command_error(f"Error: Failed to purge old filament")
+
+        if return_to_print:
+            self.gcode.run_script_from_command("_CLEAR_REZINA")
+            self.gcode.run_script_from_command(f"G1 X{initial_pos[0]} Y{initial_pos[1]} F{self.travel_move_speed}")
+            self.gcode.run_script_from_command(f"G1 Z{initial_pos[2]} F{self.z_travel_move_speed}")
+        else:
+            self.gcode.run_script_from_command('_GOTO_TRASH')
+
+        self.gcode.run_script_from_command('_ENABLE_SENSOR')
+        self.gcode.run_script_from_command(f'SET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}')
 
     def cmd_QS_CHANGE_FILAMENT(self, gcmd):
         try:
@@ -305,17 +362,21 @@ class QuickSwap:
         # Source channel is empty - purge if not empty at extruder; then skip unload
         if not self.zmod_ifs.ifs_data.get_port(old_channel):
             cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{target_channel}'"]
-            if self.zmod_ifs.get_extruder_sensor():
-                self.info(f'Old channel empty at IFS, loaded at extruder. Purging.', cmds)
-                if not (nopoop and layer_num >= 2):
-                    already_at_trash = True
-                purge_cmd = f'_QS_PURGE_OLD_FILAMENT TUBE_LENGTH={old_filament_info.filament_tube_length} DROP_LENGTH={old_filament_info.filament_drop_length} DROP_SPEED={old_filament_info.filament_extruder_speed} EXTRA_PURGE={old_filament_info.filament_unload_before_cutting}'
-                if not already_at_trash:
-                    purge_cmd += f' RETURN_X={initial_pos[0]} RETURN_Y={initial_pos[1]} RETURN_Z={initial_pos[2]}'
-                cmds += [purge_cmd]
-            elif not switchover:
-                self.info(f'Old channel empty. Skipping unload.', cmds)
-            skip_unload = True
+            if switchover:
+                already_at_trash = True
+                skip_unload = True
+            else:
+                if self.zmod_ifs.get_extruder_sensor():
+                    self.info(f'Old channel empty at IFS, loaded at extruder. Purging.', cmds)
+                    purge_cmd = f"_QS_PURGE_OLD_FILAMENT TUBE_LENGTH={old_filament_info['filament_tube_length']} DROP_LENGTH={old_filament_info['filament_drop_length']} DROP_SPEED={old_filament_info['filament_extruder_speed']} EXTRA_PURGE={old_filament_info['nozzle_cleaning_length'] + old_filament_info['filament_unload_after_cutting']}"
+                    if nopoop and layer_num >= 2:
+                        purge_cmd += ' RETURN=1'
+                    else:
+                        already_at_trash = True
+                    cmds += [purge_cmd]
+                else:
+                    self.info(f'Old channel empty. Skipping unload.', cmds)
+                skip_unload = True
 
         cmds += ["_DISABLE_SENSOR"]
         cmds += ["G90"] # Absolute
@@ -358,63 +419,6 @@ class QuickSwap:
         cmds += ["IFS_MOTION_ON"]
         cmds += ["IFS_SWITCH_ON"]
         self.info(f'Filament change complete', cmds, SILENT_LEVEL_PRIORITY)
-
-    def _qs_purge_old_filament(self, gcmd):
-        initial_fan_speed = self.printer.lookup_object('fan_generic fanM106').get_status(self.reactor.monotonic())['speed']
-
-        tube_length = gcmd.get_int('TUBE_LENGTH')
-        drop_length = gcmd.get_int('DROP_LENGTH')
-        drop_speed = gcmd.get_int('DROP_SPEED')
-        extra_purge = gcmd.get_int('EXTRA_PURGE')
-
-        return_x = gcmd.get_int('RETURN_X', None)
-        return_y = gcmd.get_int('RETURN_Y', None)
-        return_z = gcmd.get_int('RETURN_Z', None)
-        has_return = None not in [return_x, return_y, return_z]
-
-        cmds = []
-
-        self.gcode.run_script_from_command("_DISABLE_SENSOR")
-        self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=0')
-
-        self._qs_move_trash_direct(initial_pos)
-
-        remaining_purge_length = tube_length
-        remaining_poop_length = drop_length
-        done_grip = False
-
-        while remaining_purge_length > 0:
-            if not self.zmod_ifs.get_extruder_sensor():
-                remaining_purge_length = min(remaining_purge_length, self.purge_finish_length + extra_purge)
-                remaining_poop_length = remaining_purge_length
-                this_extrude_length = remaining_purge_length
-            else:
-                this_extrude_length = min(self.purge_step_length, remaining_poop_length, remaining_purge_length)
-
-            self.gcode.run_script_from_command('G1 E{this_extrude_length} F{drop_speed}\nM400')
-            remaining_poop_length -= this_extrude_length
-            remaining_purge_length -= this_extrude_length
-
-            if remaining_purge_length <= 0 or remaining_poop_length <= 0:
-                self.gcode.run_script_from_command(f'SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED=0')
-                remaining_poop_length = drop_length
-                if remaining_purge_length > 0:
-                    self.gcode.run_script_from_command('_GOTO_TRASH')
-
-        if self.zmod_ifs.get_extruder_sensor():
-            self.gcode.run_script_from_command('_GOTO_TRASH')
-            if self.zmod_ifs.get_extruder_sensor():
-                raise self.printer.command_error(f"Error: Failed to purge old filament")
-
-        if has_return:
-            self.gcode.run_script_from_command("_CLEAR_REZINA")
-            self.gcode.run_script_from_command(f"G1 X{return_x} Y{return_y} F{self.travel_move_speed}")
-            self.gcode.run_script_from_command(f"G1 Z{return_z} F{self.z_travel_move_speed}")
-        else:
-            self.gcode.run_script_from_command('_GOTO_TRASH')
-
-        self.gcode.run_script_from_command('_ENABLE_SENSOR')
-        self.gcode.run_script_from_command(f'SET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}')
 
     def _qs_move_to_cutter(self, initial_pos, old_channel, old_filament_info, cmds):
         # Move to cutter while simultaneously performing unload before cut
