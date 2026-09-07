@@ -55,12 +55,18 @@ For best results:
 [zmod_ifs]
 next_cmd_delay: 0.02
 
-** In filament.json **  (All versions)
+** In filament.json, defaults **  (All versions)
 filament_unload_before_cutting: 20
-nozzle_cleaning_length: 25 - [filament_unload_after_cutting]
+nozzle_cleaning_length: (25 - [filament_unload_after_cutting])
 filament_unload_into_tube: Depends on 4-in-1-adapter version. Set it so that the
                            filament when unloaded, sits just barely outside of
-                           the adapter
+                           the adapter. Calibration test coming soon.
+                           
+** In filament.json, filament-specific **  (All versions)
+filament_ifs_speed: Determine via the QS_IFS_CALIBRATION_SPEED macro.
+filament_extruder_speed: Determine max volumetric flow via slicer calibration
+                         tests, then multiply by 24.95 and round to the nearest
+                         integer (or nearest "nice" number if you prefer).
 
 
 
@@ -97,7 +103,8 @@ This was printed with 0.25mm layer height, giving 11 color changes.
 
 Tested with Z-Mod 1.7.3-78, but with the -79 version of zmod_ifs.py, and the
 next_cmd_delay set to 0.02. This applies to the QuickSwap AND non-QuickSwap
-tests.
+tests. Finer calibrations (eg. load/unload speed) were not performed; I just
+used my existing values for all tests.
 
 The only slicer difference between the tests was the prime tower type and the
 "Purge into prime tower" setting. Otherwise, the settings and model were the

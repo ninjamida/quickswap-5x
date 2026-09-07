@@ -15,6 +15,8 @@ DEBUG_LEVEL_INTERNAL = 1
 FFCONFIG = '/usr/prog/config/Adventurer5M.json'
 MAPPING_CONFIG = '/usr/data/config/mod_data/file.json'
 
+# Todo: Poop after a partial runout too.
+
 class QuickSwap:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -37,12 +39,15 @@ class QuickSwap:
 
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
+        # Filament change commands
         self.gcode.register_command('_QS_CHANGE_FILAMENT', self.cmd_QS_CHANGE_FILAMENT)
         self.gcode.register_command('_QS_PURGE_OLD_FILAMENT', self.cmd_QS_PURGE_OLD_FILAMENT)
         self.gcode.register_command('_QS_WAIT_IFS_IDLE', self.cmd_QS_WAIT_IFS_IDLE)
         self.gcode.register_command('_QS_GENERATE_TEST', self.cmd_QS_GENERATE_TEST)
-        self.gcode.register_command('_QS_CHANGE_ANALOG_FILAMENT', self.cmd_QS_CHANGE_ANALOG_FILAMENT)
         self.gcode.register_command('_QS_IFS_ASYNC_COMMAND', self.cmd_QS_IFS_ASYNC_COMMAND)
+
+        # Calibration commands
+        self.gcode.register_command('_QS_IFS_CALIBRATION_SPEED', self.cmd_QS_IFS_CALIBRATION_SPEED)
 
         self.ifs_flag_time = time.monotonic() - self.ifs_flag_delay
 
@@ -81,8 +86,6 @@ class QuickSwap:
         self._set_vars()
         self._rename_macro('_A_CHANGE_FILAMENT', '_QS_ORIG_A_CHANGE_FILAMENT')
         self._rename_macro('_QS_A_CHANGE_FILAMENT', '_A_CHANGE_FILAMENT')
-        self._rename_macro('ANALOG_PRUTOK', '_QS_ORIG_ANALOG_PRUTOK')
-        self._rename_macro('_QS_ANALOG_PRUTOK', 'ANALOG_PRUTOK')
 
     def _set_vars(self):
         eventtime = self.reactor.monotonic()
@@ -126,6 +129,10 @@ class QuickSwap:
             original_handler
         )
 
+# =============================================================================
+# FILAMENT CHANGE FUNCTIONS
+# =============================================================================
+
     def cmd_QS_GENERATE_TEST(self, gcmd):
         channel = gcmd.get_int('CHANNEL', 0)
         old_debug = self.debug
@@ -166,50 +173,6 @@ class QuickSwap:
         if clear:
             self.gcode.respond_info(f'QuickSwap: IFS async delay cleared')
             self.ifs_flag_time -= self.ifs_flag_delay
-
-    def cmd_QS_CHANGE_ANALOG_FILAMENT(self, gcmd):
-        try:
-            self._set_vars()
-            status = self.gcode_move.get_status(self.reactor.monotonic())
-            initial_pos = status.get('gcode_position')
-
-            self.gcode.run_script_from_command('_A_CHANGE_FILAMENT SWITCHOVER=1')
-            channel = self.zmod_ifs.get_current_channel_from_config()
-            filament_info = self.zmod_ifs.get_prutok_config(channel)
-
-            drop_length = filament_info['filament_drop_length']
-            extruder_speed = filament_info['filament_extruder_speed']
-            initial_fan_speed = self.printer.lookup_object('fan_generic fanM106').get_status(self.reactor.monotonic())['speed']
-
-            self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=0\n_DISABLE_SENSOR')
-            self.gcode.run_script_from_command(f'G1 E{drop_length} F{extruder_speed}')
-            self.gcode.run_script_from_command(f'SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}\n_ENABLE_SENSOR')
-            self.gcode.run_script_from_command(f'G1 X{initial_pos[0]} Y{initial_pos[1]} F{self.travel_move_speed}')
-            self.gcode.run_script_from_command(f'G1 Z{initial_pos[2]} F{self.z_travel_move_speed}')
-            self.gcode.run_script_from_command('RESTORE_GCODE_STATE NAME=qs_change_filament')
-        except Exception as e:
-            msg = f"!! (QuickSwap) Filament switchover error: {str(e)}\nPausing print"
-            gcmd.respond_raw(f"{msg}")
-            gcmd.respond_raw(f"tgalarm_photo {msg}")
-            if self.debug == DEBUG_LEVEL_NONE:
-                try:
-                    self.gcode.run_script_from_command("IFS_F112")
-                    self.gcode.run_script_from_command("IFS_F18")
-                except:
-                    pass
-                pause_resume = self.printer.lookup_object('pause_resume')
-                pause_resume.send_pause_command()
-                self.gcode.run_script_from_command("PAUSE\nM400\n")
-            else:
-                try:
-                    cmds += ['# Interrupted by error']
-                    e_filename, e_line, e_func, e_text = traceback.extract_tb(e.__traceback__)[-1]
-                    cmds += [f'# {e_filename}, function {e_func} at line {e_line}']
-                    cmds += [f'# Message: {e_text}']
-                    with open('/usr/data/config/mod_data/quickswap_debug.txt', 'w') as f:
-                        f.write('\n'.join(cmds))
-                except:
-                    pass
 
     def cmd_QS_PURGE_OLD_FILAMENT(self, gcmd):
         status = self.gcode_move.get_status(self.reactor.monotonic())
@@ -272,8 +235,7 @@ class QuickSwap:
             self._set_vars()
             cmds = []
             channel = gcmd.get_int('CHANNEL', 0)
-            switchover = gcmd.get_int('SWITCHOVER', 0)
-            self._generate_quickswap_filament_gcode(channel, switchover != 0, cmds)
+            self._generate_quickswap_filament_gcode(channel, cmds)
 
             if self.debug == DEBUG_LEVEL_INTERNAL:
                 with open('/usr/data/config/mod_data/quickswap_debug.txt', 'w') as f:
@@ -312,22 +274,19 @@ class QuickSwap:
         if self.debug > DEBUG_LEVEL_NONE:
             cmds += [f'# {msg}']
 
-    def _generate_quickswap_filament_gcode(self, unmapped_target_channel, switchover, cmds):
+    def _generate_quickswap_filament_gcode(self, unmapped_target_channel, cmds):
         status = self.gcode_move.get_status(self.reactor.monotonic())
         old_channel = self.zmod_ifs.get_current_channel_from_config()
-        if switchover:
-            target_channel = old_channel
-        else:
-            target_channel = self._qs_get_filament_mapping(unmapped_target_channel)
+        target_channel = self._qs_get_filament_mapping(unmapped_target_channel)
         skip_unload = False
         already_at_trash = False
 
-        if old_channel == target_channel and not switchover:
+        if old_channel == target_channel:
             if self.save_variables.allVariables.get('always_full_color_change') == 0:
                 self.info('Target filament already loaded', SILENT_LEVEL_PRIORITY)
                 return
 
-        nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0 and not switchover
+        nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0
         layer_num = self.print_stats.get_status(self.reactor.monotonic()).get('info', {}).get('current_layer', None)
         initial_pos = status.get('gcode_position')
 
@@ -337,10 +296,7 @@ class QuickSwap:
         if old_filament_info is None:
             old_filament_info = new_filament_info
 
-        if switchover:
-            self.info(f'Changing filament on runout to physical channel {target_channel}', cmds, SILENT_LEVEL_PRIORITY)
-        else:
-            self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, SILENT_LEVEL_PRIORITY)
+        self.info(f'Changing filament to T{unmapped_target_channel} (physical channel {target_channel})', cmds, SILENT_LEVEL_PRIORITY)
 
         if layer_num is None: # This will happen if the routine is triggered while not printing
             self.info(f'Current layer number could not be retrieved. Using first layer behavior.', cmds, SILENT_LEVEL_PRIORITY)
@@ -362,21 +318,14 @@ class QuickSwap:
         # Source channel is empty - purge if not empty at extruder; then skip unload
         if not self.zmod_ifs.ifs_data.get_port(old_channel):
             cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{target_channel}'"]
-            if switchover:
+            skip_unload = True
+            if self.zmod_ifs.get_extruder_sensor():
+                self.info(f'Old channel empty at IFS, loaded at extruder. Purging.', cmds)
+                purge_cmd = f"_QS_PURGE_OLD_FILAMENT TUBE_LENGTH={old_filament_info['filament_tube_length']} DROP_LENGTH={old_filament_info['filament_drop_length']} DROP_SPEED={old_filament_info['filament_extruder_speed']} EXTRA_PURGE={old_filament_info['nozzle_cleaning_length'] + old_filament_info['filament_unload_after_cutting']}"
                 already_at_trash = True
-                skip_unload = True
+                cmds += [purge_cmd]
             else:
-                if self.zmod_ifs.get_extruder_sensor():
-                    self.info(f'Old channel empty at IFS, loaded at extruder. Purging.', cmds)
-                    purge_cmd = f"_QS_PURGE_OLD_FILAMENT TUBE_LENGTH={old_filament_info['filament_tube_length']} DROP_LENGTH={old_filament_info['filament_drop_length']} DROP_SPEED={old_filament_info['filament_extruder_speed']} EXTRA_PURGE={old_filament_info['nozzle_cleaning_length'] + old_filament_info['filament_unload_after_cutting']}"
-                    if nopoop and layer_num >= 2:
-                        purge_cmd += ' RETURN=1'
-                    else:
-                        already_at_trash = True
-                    cmds += [purge_cmd]
-                else:
-                    self.info(f'Old channel empty. Skipping unload.', cmds)
-                skip_unload = True
+                self.info(f'Old channel empty. Skipping unload.', cmds)
 
         cmds += ["_DISABLE_SENSOR"]
         cmds += ["G90"] # Absolute
@@ -384,8 +333,7 @@ class QuickSwap:
 
         if skip_unload:
             if not already_at_trash:
-                if not (nopoop and layer_num >= 2):
-                    self._qs_move_trash_direct(initial_pos, cmds)
+                self._qs_move_trash_direct(initial_pos, cmds)
         else:
             self._qs_move_to_cutter(initial_pos, old_channel, old_filament_info, cmds)
 
@@ -404,11 +352,17 @@ class QuickSwap:
 
         self._qs_load_new_filament(old_filament_info, target_channel, new_filament_info, skip_unload, cmds)
 
+        if skip_unload:
+            cmds += ['SET_FAN_SPEED FAN=fanM106 SPEED=0']
+            cmds += [f"G1 E{new_filament_info['filament_drop_length']} F{new_filament_info['filament_extruder_speed']}"]
+            cmds += [f"SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}"]
+
         if nopoop:
-            if layer_num > 1:
+            if layer_num > 1 and not skip_unload:
                 self._qs_nopoop_wipe(cmds)
             else:
-                cmds += ["_SBROS_TRASH"]
+                if not skip_unload:
+                    cmds += ["_SBROS_TRASH"]
                 cmds += ["_CLEAR_REZINA"]
                 cmds += [f"G1 X{initial_pos[0]} Y{initial_pos[1]} F{self.travel_move_speed}"]
                 cmds += [f"G1 Z{initial_pos[2]} F{self.z_travel_move_speed}"]
@@ -632,7 +586,10 @@ class QuickSwap:
 
         cmds += [f"M104 S{new_filament_info['temp']}"]
 
-        insert_length = self.insert_base_distance + old_filament_info['filament_unload_before_cutting']
+        insert_length = self.insert_base_distance
+        if not skip_unload:
+            insert_length += old_filament_info['filament_unload_before_cutting']
+
         cmds += [f"G1 E{insert_length} F{new_filament_info['filament_extruder_speed']}"]
         cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={round(insert_length)} SPEED={int(new_filament_info['filament_extruder_speed'] * speed_factor)} SLEEP=1"]
         cmds += ["M400"]
@@ -694,6 +651,134 @@ class QuickSwap:
                 json.dump(mapping, f)
 
         return new_channel
+
+# =============================================================================
+# CALIBRATION FUNCTIONS
+# =============================================================================
+
+    def _qs_move_to_sensor(self, channel, speed, tolerance, tube_flex, text=None):
+        if text:
+            self.gcode.respond_raw(text)
+            
+        while self.zmod_ifs.get_extruder_sensor():
+            self.gcode.run_script_from_command(f"IFS_F11 PRUTOK={channel} LEN=1 SPEED={speed} WAIT=1\nM400")
+            time.sleep(0.6)
+            
+        if tube_flex > 0:
+            self.gcode.run_script_from_command(f"IFS_F10 PRUTOK={channel} LEN={tube_flex} SPEED={speed} WAIT=1\nM400")
+            
+        return self._qs_move_to_sensor_forward(channel, speed, tolerance)
+        
+    def _qs_move_to_sensor_forward(self, channel, speed, tolerance, text=None):
+        if text:
+            self.gcode.respond_raw(text)
+            
+        reinsert_steps = 0
+        while not self.zmod_ifs.get_extruder_sensor():
+            self.gcode.run_script_from_command(f"IFS_F10 PRUTOK={channel} LEN=1 SPEED={speed} WAIT=1\nM400")
+            time.sleep(0.6)
+            reinsert_steps += 1
+            if reinsert_steps > tolerance:
+                break
+
+        return reinsert_steps
+
+    def cmd_QS_IFS_CALIBRATION_SPEED(self, gcmd):
+        self.gcode.run_script_from_command('RESPOND TYPE=command MSG="action:prompt_end"')
+        
+        channel = gcmd.get_int('CHANNEL')
+        min_speed = gcmd.get_int('MIN_SPEED')
+        max_speed = gcmd.get_int('MAX_SPEED')
+        speed_step = gcmd.get_int('SPEED_STEP')
+        test_length = gcmd.get_int('TEST_LENGTH')
+        tolerance = gcmd.get_int('TOLERANCE')
+        tube_flex = gcmd.get_int('TUBE_FLEX')
+
+        result_insert = max_speed + 1
+        result_withdraw = max_speed + 1
+
+        slow_speed = min(min_speed, 150)
+
+        filament_info = self.zmod_ifs.get_prutok_config(channel)
+
+        if self.zmod_ifs.get_extruder_sensor():
+            self.gcode.respond_raw('FAILED: Please unload extruder and try again.')
+            return
+        if not self.zmod_ifs.ifs_data.get_port(channel):
+            self.gcode.respond_raw(f'FAILED: Please load IFS channel {channel} and try again.')
+            return
+
+        self.gcode.respond_raw('Inserting filament')
+        self.gcode.run_script_from_command(f"IFS_F24 PRUTOK={channel}")
+        self.gcode.run_script_from_command(f"IFS_F10 PRUTOK={channel} LEN={filament_info['filament_tube_length']} SPEED={min_speed} CHECK=1\nM400")
+
+        if not self.zmod_ifs.get_extruder_sensor():
+            self.gcode.respond_raw('FAILED: Filament not detected in print head after insertion.')
+            return
+
+        if tube_flex >= 0:
+            if self._qs_move_to_sensor(channel, slow_speed, tolerance, tube_flex, 'Verifying filament positioning') > tolerance:
+                self.gcode.respond_raw(f"FAILED: More than {reinsert_steps}mm reinsertion was needed. Try adjusting tube flex length or increasing tolerance.")
+                return
+        else:
+            max_autodetect_steps = 15
+            move_steps = self._qs_move_to_sensor(channel, slow_speed, max_autodetect_steps, -1, 'Determining tube flex length')
+            if move_steps > max_autodetect_steps:
+                self.gcode.respond_raw(f"FAILED: Filament not detected after {max_autodetect_steps} steps.")
+                return
+            tube_flex = move_steps - 1
+            self.gcode.respond_raw(f"Tube flex length detected: {tube_flex}mm")
+            
+
+        this_speed = min_speed
+        last_speed = min_speed
+        while True: # break condition at end of loop
+            redo_iteration = False
+
+            self.gcode.respond_raw(f'Running test: Withdraw speed {min(this_speed, result_withdraw)}, insert speed {min(this_speed, result_insert)}')
+            self.gcode.run_script_from_command(f"IFS_F11 PRUTOK={channel} LEN={test_length} SPEED={min(this_speed, result_withdraw)} WAIT=1\nM400")
+            self.gcode.run_script_from_command(f"IFS_F10 PRUTOK={channel} LEN={test_length - tolerance} SPEED={min(this_speed, result_insert)} WAIT=1\nM400")
+            time.sleep(0.6)
+
+            if self.zmod_ifs.get_extruder_sensor():
+                result_withdraw = last_speed
+                self._qs_move_to_sensor(channel, slow_speed, tolerance, tube_flex, 'Repositioning filament')
+                redo_iteration = True
+            else:
+                insert_step_count = self._qs_move_to_sensor_forward(channel, slow_speed, tolerance * 2)
+
+                if not self.zmod_ifs.get_extruder_sensor():
+                    result_insert = last_speed
+                    redo_iteration = True
+                    max_insert_steps = 15
+                    self.gcode.run_script_from_command(f"IFS_F10 PRUTOK={channel} LEN={filament_info['filament_tube_length']} SPEED={min_speed} CHECK=1\nM400")
+                    if self._qs_move_to_sensor_forward(channel, slow_speed, max_insert_steps, 'Repositioning filament') > max_insert_steps:
+                        self.gcode.respond_raw("FAILED: Unable to reposition filament position")
+                        return
+                elif insert_step_count > tolerance * 2: # In case the "first over the limit" iteration activated the sensor
+                    result_insert = last_speed
+                    redo_iteration = True
+
+            if result_withdraw <= max_speed and result_insert <= max_speed:
+                break
+
+            if redo_iteration:
+                continue
+
+            last_speed = this_speed
+            if this_speed < max_speed:
+                this_speed = min(this_speed + speed_step, max_speed)
+            else:
+                break
+
+        self.gcode.respond_raw(f'Test result: Withdraw speed {min(max_speed, result_withdraw)}, insert speed {min(max_speed, result_insert)}')
+        if result_withdraw > max_speed and result_insert > max_speed:
+            self.gcode.respond_raw('Both directions succeeded at maximum test speed')
+        elif result_withdraw > max_speed:
+            self.gcode.respond_raw('Withdrawal succeeded at maximum test speed')
+        elif result_insert > max_speed:
+            self.gcode.respond_raw('Insert succeeded at maximum test speed')
+
 
 def load_config(config):
     return QuickSwap(config)
