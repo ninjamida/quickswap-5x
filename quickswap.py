@@ -632,7 +632,10 @@ class QuickSwap:
 
         cmds += [f"M104 S{new_filament_info['temp']}"]
 
-        insert_length = self.insert_base_distance + old_filament_info['filament_unload_before_cutting']
+        insert_length = self.insert_base_distance
+        if not skip_unload:
+            insert_length += old_filament_info['filament_unload_before_cutting']
+        
         cmds += [f"G1 E{insert_length} F{new_filament_info['filament_extruder_speed']}"]
         cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={round(insert_length)} SPEED={int(new_filament_info['filament_extruder_speed'] * speed_factor)} SLEEP=1"]
         cmds += ["M400"]
