@@ -15,6 +15,8 @@ DEBUG_LEVEL_INTERNAL = 1
 FFCONFIG = '/usr/prog/config/Adventurer5M.json'
 MAPPING_CONFIG = '/usr/data/config/mod_data/file.json'
 
+# Todo: Poop after a partial runout too.
+
 class QuickSwap:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -81,8 +83,6 @@ class QuickSwap:
         self._set_vars()
         self._rename_macro('_A_CHANGE_FILAMENT', '_QS_ORIG_A_CHANGE_FILAMENT')
         self._rename_macro('_QS_A_CHANGE_FILAMENT', '_A_CHANGE_FILAMENT')
-        self._rename_macro('ANALOG_PRUTOK', '_QS_ORIG_ANALOG_PRUTOK')
-        self._rename_macro('_QS_ANALOG_PRUTOK', 'ANALOG_PRUTOK')
 
     def _set_vars(self):
         eventtime = self.reactor.monotonic()
@@ -174,19 +174,9 @@ class QuickSwap:
             initial_pos = status.get('gcode_position')
 
             self.gcode.run_script_from_command('_A_CHANGE_FILAMENT SWITCHOVER=1')
-            channel = self.zmod_ifs.get_current_channel_from_config()
-            filament_info = self.zmod_ifs.get_prutok_config(channel)
-
-            drop_length = filament_info['filament_drop_length']
-            extruder_speed = filament_info['filament_extruder_speed']
-            initial_fan_speed = self.printer.lookup_object('fan_generic fanM106').get_status(self.reactor.monotonic())['speed']
-
-            self.gcode.run_script_from_command('SET_FAN_SPEED FAN=fanM106 SPEED=0\n_DISABLE_SENSOR')
-            self.gcode.run_script_from_command(f'G1 E{drop_length} F{extruder_speed}')
-            self.gcode.run_script_from_command(f'SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}\n_ENABLE_SENSOR')
             self.gcode.run_script_from_command(f'G1 X{initial_pos[0]} Y{initial_pos[1]} F{self.travel_move_speed}')
             self.gcode.run_script_from_command(f'G1 Z{initial_pos[2]} F{self.z_travel_move_speed}')
-            self.gcode.run_script_from_command('RESTORE_GCODE_STATE NAME=qs_change_filament')
+            self.gcode.run_script_from_command('RESUME')
         except Exception as e:
             msg = f"!! (QuickSwap) Filament switchover error: {str(e)}\nPausing print"
             gcmd.respond_raw(f"{msg}")
@@ -360,23 +350,19 @@ class QuickSwap:
             target_channel = new_target_channel
 
         # Source channel is empty - purge if not empty at extruder; then skip unload
-        if not self.zmod_ifs.ifs_data.get_port(old_channel):
+        if switchover or not self.zmod_ifs.ifs_data.get_port(old_channel):
             cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{target_channel}'"]
+            skip_unload = True
             if switchover:
                 already_at_trash = True
-                skip_unload = True
             else:
                 if self.zmod_ifs.get_extruder_sensor():
                     self.info(f'Old channel empty at IFS, loaded at extruder. Purging.', cmds)
                     purge_cmd = f"_QS_PURGE_OLD_FILAMENT TUBE_LENGTH={old_filament_info['filament_tube_length']} DROP_LENGTH={old_filament_info['filament_drop_length']} DROP_SPEED={old_filament_info['filament_extruder_speed']} EXTRA_PURGE={old_filament_info['nozzle_cleaning_length'] + old_filament_info['filament_unload_after_cutting']}"
-                    if nopoop and layer_num >= 2:
-                        purge_cmd += ' RETURN=1'
-                    else:
-                        already_at_trash = True
+                    already_at_trash = True
                     cmds += [purge_cmd]
                 else:
                     self.info(f'Old channel empty. Skipping unload.', cmds)
-                skip_unload = True
 
         cmds += ["_DISABLE_SENSOR"]
         cmds += ["G90"] # Absolute
@@ -384,8 +370,7 @@ class QuickSwap:
 
         if skip_unload:
             if not already_at_trash:
-                if not (nopoop and layer_num >= 2):
-                    self._qs_move_trash_direct(initial_pos, cmds)
+                self._qs_move_trash_direct(initial_pos, cmds)
         else:
             self._qs_move_to_cutter(initial_pos, old_channel, old_filament_info, cmds)
 
@@ -403,12 +388,18 @@ class QuickSwap:
             self._qs_unload_old_filament(old_channel, old_filament_info, cmds)
 
         self._qs_load_new_filament(old_filament_info, target_channel, new_filament_info, skip_unload, cmds)
+                
+        if skip_unload:
+            cmds += ['SET_FAN_SPEED FAN=fanM106 SPEED=0']
+            cmds += [f"G1 E{new_filament_info['filament_drop_length']} F{new_filament_info['filament_extruder_speed']}"]
+            cmds += [f"SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}"]
 
         if nopoop:
-            if layer_num > 1:
+            if layer_num > 1 and not skip_unload:
                 self._qs_nopoop_wipe(cmds)
             else:
-                cmds += ["_SBROS_TRASH"]
+                if not skip_unload:
+                    cmds += ["_SBROS_TRASH"]
                 cmds += ["_CLEAR_REZINA"]
                 cmds += [f"G1 X{initial_pos[0]} Y{initial_pos[1]} F{self.travel_move_speed}"]
                 cmds += [f"G1 Z{initial_pos[2]} F{self.z_travel_move_speed}"]
