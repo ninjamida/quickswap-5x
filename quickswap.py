@@ -281,7 +281,7 @@ class QuickSwap:
                 cmds += ['# Interrupted by error']
                 cmds += [f'# {e_filename}, function {e_func} at line {e_line}']
                 cmds += [f'# Message: {e_text}']
-                with open(f'/usr/data/config/mod_data/quickswap_debug.txt_{time.monotonic()}', 'w') as f:
+                with open(f'/usr/data/config/mod_data/quickswap_debug_{time.monotonic()}.txt', 'w') as f:
                     f.write('\n'.join(cmds))
             except:
                 pass
@@ -303,7 +303,7 @@ class QuickSwap:
 
         if old_channel == target_channel:
             if self.save_variables.allVariables.get('always_full_color_change') == 0:
-                self.info('Target filament already loaded', SILENT_LEVEL_PRIORITY)
+                self.info('Target filament already loaded', cmds, SILENT_LEVEL_PRIORITY)
                 return
 
         nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0
@@ -370,7 +370,7 @@ class QuickSwap:
 
             self._qs_unload_old_filament(old_channel, old_filament_info, cmds)
 
-        self._qs_load_new_filament(old_filament_info, target_channel, new_filament_info, skip_unload, cmds)
+        self._qs_load_new_filament(old_filament_info, unmapped_target_channel, target_channel, new_filament_info, skip_unload, cmds)
 
         if skip_unload:
             cmds += ['SET_FAN_SPEED FAN=fanM106 SPEED=0']
@@ -408,7 +408,7 @@ class QuickSwap:
         withdraw_duration = unload_before_cut / (extruder_speed / 60)
 
         remaining_withdraw_duration = withdraw_duration
-        internal_pos = initial_pos
+        internal_pos = list(initial_pos[:3])
         done_ifs_grab = False
         for move in moves_to_cutter:
             # X, Y, Z, speed mm/min, duration sec
@@ -471,7 +471,7 @@ class QuickSwap:
         factor = split_duration / move_duration
         result = []
         for i in range(3):
-            if initial_pos[i] == new_pos[i]:
+            if initial_pos[i] == new_pos[i] or new_pos[i] == None:
                 result += [None]
             else:
                 result += [initial_pos[i] + ((new_pos[i] - initial_pos[i]) * split_duration / move_duration)]
@@ -593,7 +593,7 @@ class QuickSwap:
         cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={round(unload_distance)} SPEED={int(old_filament_info['filament_extruder_speed'] * speed_factor)}"]
         cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={old_filament_info['filament_unload_into_tube']} SPEED={int(old_filament_info['filament_ifs_speed'] * speed_factor)}"]
 
-    def _qs_load_new_filament(self, old_filament_info, new_channel, new_filament_info, skip_unload, cmds):
+    def _qs_load_new_filament(self, old_filament_info, new_channel_raw, new_channel, new_filament_info, skip_unload, cmds):
         self.info(f'Loading channel {new_channel}', cmds)
 
         speed_factor = float(self.gcode_move.get_status(self.reactor.monotonic()).get('speed_factor', 1.0))
@@ -616,7 +616,7 @@ class QuickSwap:
 
         cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F39 C{new_channel}' RESPONSE='F39 ok. FFS channel {new_channel} release.'"]
         cmds += [f"_SET_EXTRUDER_SLOT SLOT={new_channel}"]
-        cmds += [f"SDCARD_SET_CHANNEL CHANNEL={new_channel}"]
+        cmds += [f"SDCARD_SET_CHANNEL CHANNEL={new_channel_raw}"]
         cmds += ["SDCARD_ENABLE_FFM ENABLE=1"]
 
     def _qs_nopoop_wipe(self, cmds):
