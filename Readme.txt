@@ -17,7 +17,7 @@ primary_branch: master
 
 
 WARNINGS:
-- Filament runout switchover is not yet tested at all
+- Latest version is not tested with Nopoop (older versions have been)
 - Only tested with Klipper 12
 - Use at your own risk
 
@@ -31,9 +31,11 @@ Compatibility requirements:
 - Klipper 12 recommended.
 
 And to avoid doubt:
-- YES, automatic switch on runout should work (untested), including in
-  multicolor prints
-- YES, compatible (tested) with IFS Jacker
+- YES, automatic switch on runout works; stock Z-Mod continues to handle it and
+  QuickSwap does not interfere
+- YES, QuickSwap can handle the case of "filament has run out at the IFS, but
+  not yet at the extruder" and purge it properly
+- YES, compatible with IFS Jacker
 
 
 
@@ -46,6 +48,9 @@ b) Where it makes sense to do so, IFS actions are also performed in parallel.
    In particular, the initial clamping of the old filament channel, and the
    release of the new filament channel at the end of the process.
 c) Less unnecessary delays between actions.
+d) QuickSwap also provides some calibration functions to determine how fast you
+   can set the filament_ifs_speed parameter. Increasing this can make a very
+   significant difference.
 
 
 
@@ -71,7 +76,7 @@ filament_extruder_speed: Determine max volumetric flow via slicer calibration
 
 
 Settings:
-Add in user.cfg. Default values shown below.
+Add in user.cfg if you want to customize these. Default values shown below.
 
 [quickswap]
 silent: 0                   # Change to 1 to hide most output text, or 2 to hide
@@ -104,7 +109,7 @@ This was printed with 0.25mm layer height, giving 11 color changes.
 Tested with Z-Mod 1.7.3-78, but with the -79 version of zmod_ifs.py, and the
 next_cmd_delay set to 0.02. This applies to the QuickSwap AND non-QuickSwap
 tests. Finer calibrations (eg. load/unload speed) were not performed; I just
-used my existing values for all tests.
+used my existing values for all tests. QuickSwap 0.1.0 was used for these tests.
 
 The only slicer difference between the tests was the prime tower type and the
 "Purge into prime tower" setting. Otherwise, the settings and model were the

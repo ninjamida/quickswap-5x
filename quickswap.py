@@ -45,11 +45,13 @@ class QuickSwap:
         self.gcode.register_command('_QS_WAIT_IFS_IDLE', self.cmd_QS_WAIT_IFS_IDLE)
         self.gcode.register_command('_QS_GENERATE_TEST', self.cmd_QS_GENERATE_TEST)
         self.gcode.register_command('_QS_IFS_ASYNC_COMMAND', self.cmd_QS_IFS_ASYNC_COMMAND)
+        self.gcode.register_command('_QS_VALIDATE_IFS_RESPONSE', self.cmd_QS_VALIDATE_IFS_RESPONSE)
 
         # Calibration commands
         self.gcode.register_command('_QS_IFS_CALIBRATION_SPEED', self.cmd_QS_IFS_CALIBRATION_SPEED)
 
         self.ifs_flag_time = time.monotonic() - self.ifs_flag_delay
+        self.ifs_async_expected_responses = []
 
         # Fill with defaults for now. Load user's actual values in _handle_ready.
         max_z_velocity = 25.0
@@ -144,6 +146,7 @@ class QuickSwap:
 
     def cmd_QS_WAIT_IFS_IDLE(self, gcmd):
         if self.zmod_ifs.ifs:
+            validate_response = gcmd.get_int('VALIDATE', 1)
             need_wait = False
             minimum_time = self.ifs_flag_time + self.ifs_flag_delay
             time_diff = minimum_time - time.monotonic()
@@ -156,12 +159,23 @@ class QuickSwap:
                     time.sleep(time_diff)
                 while self.zmod_ifs.ifs_data.State != IFS_IDLE_STATE_VALUE:
                     time.sleep(0.01)
+                response = self.zmod_ifs._ret_command_data
+                if validate_response != 0 and response not in self.ifs_async_expected_responses:
+                    raise self.gcode.error(f'Invalid IFS async response {response}\nExpected: {self.ifs_async_expected_responses}')
                 if self.silent == SILENT_LEVEL_ALL:
                     self.gcode.respond_info('QuickSwap: IFS idle detected')
+                    
+    def cmd_QS_VALIDATE_IFS_RESPONSE(self, gcmd):
+        while self.zmod_ifs._command != 'F13':
+            time.sleep(0.01)
+        response = self.zmod_ifs._ret_command_data
+        if response not in self.ifs_async_expected_responses:
+            raise self.gcode.error(f'Invalid IFS async response {response}\nExpected: {self.ifs_async_expected_responses}')
 
     def cmd_QS_IFS_ASYNC_COMMAND(self, gcmd):
         clear = gcmd.get_int('CLEAR', 0) != 0
         cmd = gcmd.get('COMMAND', None)
+        responses = gcmd.get('RESPONSE', '')
         if cmd != None:
             if self.silent == SILENT_LEVEL_ALL:
                 self.gcode.respond_info(f'QuickSwap: IFS async command "{cmd}"')
@@ -169,6 +183,7 @@ class QuickSwap:
                 command_id = self.zmod_ifs._command_id + 1
                 self.zmod_ifs._command_id = command_id
                 self.zmod_ifs._command = f"{cmd}#{command_id}"
+            self.ifs_async_expected_responses = responses.split('|')
         self.ifs_flag_time = time.monotonic()
         if clear:
             self.gcode.respond_info(f'QuickSwap: IFS async delay cleared')
@@ -243,7 +258,14 @@ class QuickSwap:
             else:
                 self.gcode.run_script_from_command('\n'.join(cmds))
         except Exception as e:
-            msg = f"!! (QuickSwap) Filament change error: {str(e)}\nPausing print"
+            try:
+                e_filename, e_line, e_func, e_text = traceback.extract_tb(e.__traceback__)[-1]
+            except:
+                e_filename = '??'
+                e_line = -1
+                e_func = '??'
+                e_text = '??'
+            msg = f"!! (QuickSwap) Filament change error: {str(e)}\nLine {e_line} in file {e_filename}\nPausing print"
             gcmd.respond_raw(f"{msg}")
             gcmd.respond_raw(f"tgalarm_photo {msg}")
             if self.debug == DEBUG_LEVEL_NONE:
@@ -255,16 +277,14 @@ class QuickSwap:
                 pause_resume = self.printer.lookup_object('pause_resume')
                 pause_resume.send_pause_command()
                 self.gcode.run_script_from_command("PAUSE\nM400\n")
-            else:
-                try:
-                    cmds += ['# Interrupted by error']
-                    e_filename, e_line, e_func, e_text = traceback.extract_tb(e.__traceback__)[-1]
-                    cmds += [f'# {e_filename}, function {e_func} at line {e_line}']
-                    cmds += [f'# Message: {e_text}']
-                    with open('/usr/data/config/mod_data/quickswap_debug.txt', 'w') as f:
-                        f.write('\n'.join(cmds))
-                except:
-                    pass
+            try:
+                cmds += ['# Interrupted by error']
+                cmds += [f'# {e_filename}, function {e_func} at line {e_line}']
+                cmds += [f'# Message: {e_text}']
+                with open(f'/usr/data/config/mod_data/quickswap_debug_{time.monotonic()}.txt', 'w') as f:
+                    f.write('\n'.join(cmds))
+            except:
+                pass
 
     def info(self, msg, cmds, level=0):
         if self.silent <= level:
@@ -283,7 +303,7 @@ class QuickSwap:
 
         if old_channel == target_channel:
             if self.save_variables.allVariables.get('always_full_color_change') == 0:
-                self.info('Target filament already loaded', SILENT_LEVEL_PRIORITY)
+                self.info('Target filament already loaded', cmds, SILENT_LEVEL_PRIORITY)
                 return
 
         nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0
@@ -317,7 +337,7 @@ class QuickSwap:
 
         # Source channel is empty - purge if not empty at extruder; then skip unload
         if not self.zmod_ifs.ifs_data.get_port(old_channel):
-            cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{target_channel}'"]
+            cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{target_channel}' RESPONSE='F24 ok. chan {target_channel}.'"]
             skip_unload = True
             if self.zmod_ifs.get_extruder_sensor():
                 self.info(f'Old channel empty at IFS, loaded at extruder. Purging.', cmds)
@@ -350,7 +370,7 @@ class QuickSwap:
 
             self._qs_unload_old_filament(old_channel, old_filament_info, cmds)
 
-        self._qs_load_new_filament(old_filament_info, target_channel, new_filament_info, skip_unload, cmds)
+        self._qs_load_new_filament(old_filament_info, unmapped_target_channel, target_channel, new_filament_info, skip_unload, cmds)
 
         if skip_unload:
             cmds += ['SET_FAN_SPEED FAN=fanM106 SPEED=0']
@@ -372,6 +392,7 @@ class QuickSwap:
         cmds += ["_ENABLE_SENSOR"]
         cmds += ["IFS_MOTION_ON"]
         cmds += ["IFS_SWITCH_ON"]
+        cmds += ["_QS_VALIDATE_IFS_RESPONSE"]
         self.info(f'Filament change complete', cmds, SILENT_LEVEL_PRIORITY)
 
     def _qs_move_to_cutter(self, initial_pos, old_channel, old_filament_info, cmds):
@@ -387,20 +408,17 @@ class QuickSwap:
         withdraw_duration = unload_before_cut / (extruder_speed / 60)
 
         remaining_withdraw_duration = withdraw_duration
-        internal_pos = initial_pos
+        internal_pos = list(initial_pos[:3])
         done_ifs_grab = False
         for move in moves_to_cutter:
             # X, Y, Z, speed mm/min, duration sec
-            new_x = internal_pos[0]
-            new_y = internal_pos[1]
-            new_z = internal_pos[2]
 
             if remaining_withdraw_duration <= 0:
                 extruder_move = 0
                 extruder_move_time = 0
                 if not done_ifs_grab:
                     cmds += ["M400"]
-                    cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{old_channel}'"]
+                    cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{old_channel}' RESPONSE='F24 ok. chan {old_channel}.'"]
                     done_ifs_grab = True
             elif remaining_withdraw_duration >= move[4]:
                 extruder_move = move[4] * (extruder_speed / 60)
@@ -416,22 +434,24 @@ class QuickSwap:
             elif extruder_move_time == move[4]:
                 cmds += [f"G1 {self._make_position_text(move)} E-{extruder_move} F{move[3]}"]
             else:
-                split_point = self._get_move_split_point(initial_pos, [new_x, new_y, new_z], move[4], extruder_move_time)
+                split_point = self._get_move_split_point(internal_pos, move[:3], move[4], extruder_move_time)
                 cmds += [f"G1 {self._make_position_text(split_point)} E-{extruder_move} F{move[3]}"]
                 cmds += [f"M400"]
-                cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{old_channel}'"]
+                cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{old_channel}' RESPONSE='F24 ok. chan {old_channel}.'"]
                 cmds += [f"G1 {self._make_position_text(move)} F{move[3]}"]
                 done_ifs_grab = True
 
-            internal_pos = [new_x, new_y, new_z]
+            for i in range(3):
+                if move[i] is not None:
+                    internal_pos[i] = move[i]
 
         if remaining_withdraw_duration > 0:
             extruder_move = remaining_withdraw_duration * (extruder_speed / 60)
             cmds += [f"G1 E{-extruder_move} F{extruder_speed}"]
 
         if not done_ifs_grab:
-                cmds += [f"M400"]
-                cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{old_channel}'"]
+            cmds += [f"M400"]
+            cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{old_channel}' RESPONSE='F24 ok. chan {old_channel}.'"]
 
     def _make_position_text(self, move):
         move_positions = []
@@ -451,7 +471,7 @@ class QuickSwap:
         factor = split_duration / move_duration
         result = []
         for i in range(3):
-            if initial_pos[i] == new_pos[i]:
+            if initial_pos[i] == new_pos[i] or new_pos[i] == None:
                 result += [None]
             else:
                 result += [initial_pos[i] + ((new_pos[i] - initial_pos[i]) * split_duration / move_duration)]
@@ -573,7 +593,7 @@ class QuickSwap:
         cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={round(unload_distance)} SPEED={int(old_filament_info['filament_extruder_speed'] * speed_factor)}"]
         cmds += [f"IFS_F11 PRUTOK={old_channel} LEN={old_filament_info['filament_unload_into_tube']} SPEED={int(old_filament_info['filament_ifs_speed'] * speed_factor)}"]
 
-    def _qs_load_new_filament(self, old_filament_info, new_channel, new_filament_info, skip_unload, cmds):
+    def _qs_load_new_filament(self, old_filament_info, new_channel_raw, new_channel, new_filament_info, skip_unload, cmds):
         self.info(f'Loading channel {new_channel}', cmds)
 
         speed_factor = float(self.gcode_move.get_status(self.reactor.monotonic()).get('speed_factor', 1.0))
@@ -594,9 +614,9 @@ class QuickSwap:
         cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={round(insert_length)} SPEED={int(new_filament_info['filament_extruder_speed'] * speed_factor)} SLEEP=1"]
         cmds += ["M400"]
 
-        cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F39 C{new_channel}'"]
+        cmds += [f"_QS_IFS_ASYNC_COMMAND COMMAND='F39 C{new_channel}' RESPONSE='F39 ok. FFS channel {new_channel} release.'"]
         cmds += [f"_SET_EXTRUDER_SLOT SLOT={new_channel}"]
-        cmds += [f"SDCARD_SET_CHANNEL CHANNEL={new_channel}"]
+        cmds += [f"SDCARD_SET_CHANNEL CHANNEL={new_channel_raw}"]
         cmds += ["SDCARD_ENABLE_FFM ENABLE=1"]
 
     def _qs_nopoop_wipe(self, cmds):
