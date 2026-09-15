@@ -17,7 +17,6 @@ primary_branch: master
 
 
 WARNINGS:
-- Latest version is not tested with Nopoop (older versions have been)
 - You must reboot the printer (REBOOT macro or power cycle) after updating the
   QuickSwap plugin.
 - Only tested with Klipper 12
@@ -141,10 +140,16 @@ ifs_flag_delay: 1.0  # Time after sending an async IFS command, before the
                      # fast enough for that to make a difference; but you may
                      # need to set it higher on Z-Mod 1.7.3-78 or below.
                             
-insert_base_distance: 15.0  # Base length to insert filament into the extruder,
+insert_base_distance: 17.0  # Base length to insert filament into the extruder,
                             # before filament_unload_before_cutting adjustment
                             # is applied. Only needs to be "perfect" if using
-                            # nopoop.
+                            # nopoop. If you get major blobs appearing when the
+                            # purging begins, reduce this. If the purge line is
+                            # thin or absent for more than the first few mm, try
+                            # increasing this. You can change this mid-print by
+                            # using QS_SET_INSERT_BASE_DISTANCE LENGTH=x; this
+                            # will NOT be saved permanently (it will only apply
+                            # until the next reboot or firmware_restart).
                             
 slow_after_unload_length: True  # If True, when loading filament, the filament
                                 # will load at filament_ifs_speed only for a
