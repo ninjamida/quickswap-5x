@@ -317,6 +317,7 @@ class QuickSwap:
         if old_channel == target_channel:
             if self.save_variables.allVariables.get('always_full_color_change') == 0:
                 self.info('Target filament already loaded', cmds, SILENT_LEVEL_PRIORITY)
+                cmds += ["SDCARD_CLEAR_REFUELLING"]
                 return
 
         nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0
@@ -385,9 +386,11 @@ class QuickSwap:
         self._qs_load_new_filament(old_filament_info, unmapped_target_channel, target_channel, new_filament_info, skip_unload, cmds)
 
         if skip_unload:
+            initial_fan_speed = self.printer.lookup_object('fan_generic fanM106').get_status(self.reactor.monotonic())['speed']
             cmds += ['SET_FAN_SPEED FAN=fanM106 SPEED=0']
             cmds += [f"G1 E{new_filament_info['filament_drop_length']} F{new_filament_info['filament_extruder_speed']}"]
             cmds += [f"SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}"]
+            cmds += [f"G1 E{-new_filament_info['filament_unload_after_drop']} F{new_filament_info['filament_extruder_speed']}"]
 
         if nopoop:
             if layer_num > 1 and not skip_unload:
