@@ -36,6 +36,8 @@ class QuickSwap:
         self.purge_finish_length = config.getint('purge_finish_length', 15)
         self.ifs_flag_delay = config.getfloat('ifs_flag_delay', 1.0)
         self.insert_base_distance = config.getfloat('insert_base_distance', 15.0)
+        
+        self.slow_after_unload_length = config.getboolean('slow_after_unload_length', True)
 
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
@@ -608,7 +610,11 @@ class QuickSwap:
         else:
             cmds += [f"IFS_F24 PRUTOK={new_channel} WAIT=1"]
         cmds += [f'IFS_F23 PRUTOK={new_channel}']
-        cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={new_filament_info['filament_tube_length']} SPEED={int(new_filament_info['filament_ifs_speed'] * speed_factor)} CHECK=1"]
+        if self.slow_after_unload_length:
+            cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={new_filament_info['filament_unload_into_tube']} SPEED={int(new_filament_info['filament_ifs_speed'] * speed_factor)} CHECK=1"]
+            cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={new_filament_info['filament_tube_length']} SPEED={int(new_filament_info['filament_extruder_speed'] * speed_factor)} CHECK=1"]
+        else:
+            cmds += [f"IFS_F10 PRUTOK={new_channel} LEN={new_filament_info['filament_tube_length']} SPEED={int(new_filament_info['filament_ifs_speed'] * speed_factor)} CHECK=1"]
 
         cmds += [f"M104 S{new_filament_info['temp']}"]
 
@@ -816,9 +822,9 @@ class QuickSwap:
         channel = self.zmod_ifs.get_current_channel_from_config()
         filament_info = self.zmod_ifs.get_prutok_config(channel)
         
-        step = gcmd.get_int('STEP', 1)
-        initial = gcmd.get_int('INITIAL', 14)
-        max = gcmd.get_int('MAX', 25)
+        step = gcmd.get_int('STEP')
+        initial = gcmd.get_int('INITIAL')
+        max = gcmd.get_int('MAX')
         
         slow_speed = min(filament_info['filament_extruder_speed'], 150)
         
@@ -882,9 +888,9 @@ class QuickSwap:
         chan1 = None
         chan2 = None
         
-        step = gcmd.get_int('STEP', 15)
-        initial = gcmd.get_int('INITIAL', 60)
-        max = gcmd.get_int('MAX', 120)
+        step = gcmd.get_int('STEP')
+        initial = gcmd.get_int('INITIAL')
+        max = gcmd.get_int('MAX')
         
         for i in range(1, color_limit+1):
             if self.zmod_ifs.ifs_data.get_port(i):
