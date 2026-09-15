@@ -35,7 +35,7 @@ class QuickSwap:
         self.purge_step_length = config.getint('purge_step_length', 15)
         self.purge_finish_length = config.getint('purge_finish_length', 15)
         self.ifs_flag_delay = config.getfloat('ifs_flag_delay', 1.0)
-        self.insert_base_distance = config.getfloat('insert_base_distance', 15.0)
+        self.insert_base_distance = config.getfloat('insert_base_distance', 17.0)
         
         self.slow_after_unload_length = config.getboolean('slow_after_unload_length', True)
 
@@ -48,6 +48,7 @@ class QuickSwap:
         self.gcode.register_command('_QS_GENERATE_TEST', self.cmd_QS_GENERATE_TEST)
         self.gcode.register_command('_QS_IFS_ASYNC_COMMAND', self.cmd_QS_IFS_ASYNC_COMMAND)
         self.gcode.register_command('_QS_VALIDATE_IFS_RESPONSE', self.cmd_QS_VALIDATE_IFS_RESPONSE)
+        self.gcode.register_command('_QS_SET_INSERT_BASE_DISTANCE', self.cmd_QS_SET_INSERT_BASE_DISTANCE)
 
         # Calibration commands
         self.gcode.register_command('_QS_IFS_CALIBRATION_SPEED', self.cmd_QS_IFS_CALIBRATION_SPEED)
@@ -138,6 +139,11 @@ class QuickSwap:
 # =============================================================================
 # FILAMENT CHANGE FUNCTIONS
 # =============================================================================
+
+    def cmd_QS_SET_INSERT_BASE_DISTANCE(self, gcmd):
+        distance = gcmd.get_float('LENGTH', 15.0)
+        self.insert_base_distance = distance
+        self.gcode.respond_raw(f'QuickSwap: Base insert distance set to {distance}')
 
     def cmd_QS_GENERATE_TEST(self, gcmd):
         channel = gcmd.get_int('CHANNEL', 0)
