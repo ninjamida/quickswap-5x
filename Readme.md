@@ -38,6 +38,9 @@ next_cmd_delay: 0.02
 - `filament_ifs_speed`: Use the calibration to determine an appropriate value. Significantly lower values will be necessary for flexible filaments.
 - `filament_extruder_speed`: Calibrate (if you haven't already) your max volumetric speed in mm³ via OrcaSlicer's calibration, then multiply the value by 24.95 and round it to the nearest integer.
 
+## Slicer
+- If you set `filament_unload_before_cutting` as above, you can get by with very low flush volumes (which further reduces the color change time). Using the profiles from the zmod_preprocess repo, I find the default values with a multiplier of just 0.2 to be sufficient.
+
 ## QuickSwap Settings
 Generally, the default settings should be sufficient. However, if for any reason you need to change them, the following configuration options (default values listed) are available via user.cfg:
 ```
