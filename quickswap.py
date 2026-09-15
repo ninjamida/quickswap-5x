@@ -317,6 +317,7 @@ class QuickSwap:
         if old_channel == target_channel:
             if self.save_variables.allVariables.get('always_full_color_change') == 0:
                 self.info('Target filament already loaded', cmds, SILENT_LEVEL_PRIORITY)
+                cmds += ["SDCARD_CLEAR_REFUELLING"]
                 return
 
         nopoop = self.save_variables.allVariables.get('use_trash_on_print') == 0
@@ -354,9 +355,8 @@ class QuickSwap:
             skip_unload = True
             if self.zmod_ifs.get_extruder_sensor():
                 self.info(f'Old channel empty at IFS, loaded at extruder. Purging.', cmds)
-                purge_cmd = f"_QS_PURGE_OLD_FILAMENT TUBE_LENGTH={old_filament_info['filament_tube_length']} DROP_LENGTH={old_filament_info['filament_drop_length']} DROP_SPEED={old_filament_info['filament_extruder_speed']} EXTRA_PURGE={old_filament_info['nozzle_cleaning_length'] + old_filament_info['filament_unload_after_cutting']}"
+                cmds += [f"_QS_PURGE_OLD_FILAMENT TUBE_LENGTH={old_filament_info['filament_tube_length']} DROP_LENGTH={old_filament_info['filament_drop_length']} DROP_SPEED={old_filament_info['filament_extruder_speed']} EXTRA_PURGE={old_filament_info['nozzle_cleaning_length'] + old_filament_info['filament_unload_after_cutting']}"]
                 already_at_trash = True
-                cmds += [purge_cmd]
             else:
                 self.info(f'Old channel empty. Skipping unload.', cmds)
 
@@ -386,9 +386,11 @@ class QuickSwap:
         self._qs_load_new_filament(old_filament_info, unmapped_target_channel, target_channel, new_filament_info, skip_unload, cmds)
 
         if skip_unload:
+            initial_fan_speed = self.printer.lookup_object('fan_generic fanM106').get_status(self.reactor.monotonic())['speed']
             cmds += ['SET_FAN_SPEED FAN=fanM106 SPEED=0']
             cmds += [f"G1 E{new_filament_info['filament_drop_length']} F{new_filament_info['filament_extruder_speed']}"]
             cmds += [f"SET_FAN_SPEED FAN=fanM106 SPEED=1\nG4 P4000\nM400\nM400\n_SBROS_TRASH\nSET_FAN_SPEED FAN=fanM106 SPEED={initial_fan_speed}"]
+            cmds += [f"G1 E{-new_filament_info['filament_unload_after_drop']} F{new_filament_info['filament_extruder_speed']}"]
 
         if nopoop:
             if layer_num > 1 and not skip_unload:
