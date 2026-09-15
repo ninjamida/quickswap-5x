@@ -67,7 +67,10 @@ nozzle_cleaning_length: (23 - [filament_unload_after_cutting]). If this does not
                         calibration.
 filament_unload_into_tube: Depends on 4-in-1-adapter version. Set it so that the
                            filament when unloaded, sits just barely outside of
-                           the adapter. Calibration test coming soon.
+                           the adapter. Or use the calibration test. NOTE: If
+                           using an 8-way setup involving 2-way adapters on the
+                           stock tubes, make sure to use two IFS channels that
+                           share a 2-way adapter.
                            
 ** In filament.json, filament-specific **  (All versions)
 filament_ifs_speed: Determine via the QS_IFS_CALIBRATION_SPEED macro.
