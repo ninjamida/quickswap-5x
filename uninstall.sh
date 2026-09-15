@@ -1,6 +1,6 @@
 #!/bin/sh
 
-source /opt/config/mod/.shell/0.sh
+source /usr/data/zmod/zmod/.shell/0.sh
 
 SOURCE_DIR="${MOD_CONF}/mod_data/plugins/quickswap"
 TARGET_DIRS="/usr/data/zmod/klipper/klippy/extras ${KLIPPER_DIR}/klippy/extras"
