@@ -354,9 +354,8 @@ class QuickSwap:
             skip_unload = True
             if self.zmod_ifs.get_extruder_sensor():
                 self.info(f'Old channel empty at IFS, loaded at extruder. Purging.', cmds)
-                purge_cmd = f"_QS_PURGE_OLD_FILAMENT TUBE_LENGTH={old_filament_info['filament_tube_length']} DROP_LENGTH={old_filament_info['filament_drop_length']} DROP_SPEED={old_filament_info['filament_extruder_speed']} EXTRA_PURGE={old_filament_info['nozzle_cleaning_length'] + old_filament_info['filament_unload_after_cutting']}"
+                cmds += [f"_QS_PURGE_OLD_FILAMENT TUBE_LENGTH={old_filament_info['filament_tube_length']} DROP_LENGTH={old_filament_info['filament_drop_length']} DROP_SPEED={old_filament_info['filament_extruder_speed']} EXTRA_PURGE={old_filament_info['nozzle_cleaning_length'] + old_filament_info['filament_unload_after_cutting']}"]
                 already_at_trash = True
-                cmds += [purge_cmd]
             else:
                 self.info(f'Old channel empty. Skipping unload.', cmds)
 
