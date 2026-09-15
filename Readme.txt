@@ -62,7 +62,9 @@ next_cmd_delay: 0.02
 
 ** In filament.json, defaults **  (All versions)
 filament_unload_before_cutting: 20
-nozzle_cleaning_length: (25 - [filament_unload_after_cutting])
+nozzle_cleaning_length: (23 - [filament_unload_after_cutting]). If this does not
+                        give good results, try using the IFS combined unload
+                        calibration.
 filament_unload_into_tube: Depends on 4-in-1-adapter version. Set it so that the
                            filament when unloaded, sits just barely outside of
                            the adapter. Calibration test coming soon.

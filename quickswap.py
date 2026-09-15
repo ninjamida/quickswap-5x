@@ -804,6 +804,8 @@ class QuickSwap:
             self.gcode.respond_raw('Insert succeeded at maximum test speed')
             
     def cmd_QS_IFS_CALIBRATION_COMBINED_UNLOAD(self, gcmd):
+        self.gcode.run_script_from_command('RESPOND TYPE=command MSG="action:prompt_end"')
+        
         if not self.zmod_ifs.get_extruder_sensor():
             self.gcode.respond_raw('FAILED: Please load filament and try again.')
             return
