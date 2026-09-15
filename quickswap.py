@@ -166,7 +166,10 @@ class QuickSwap:
                     self.gcode.respond_info('QuickSwap: IFS idle detected')
                     
     def cmd_QS_VALIDATE_IFS_RESPONSE(self, gcmd):
+        timeout = time.monotonic() + gcmd.get_float('TIMEOUT', 3.0)
         while self.zmod_ifs._command != 'F13':
+            if time.monotonic() > timeout:
+                raise self.gcode.error(f'Timeout validating IFS async response')
             time.sleep(0.01)
         response = self.zmod_ifs._ret_command_data
         if response not in self.ifs_async_expected_responses:
