@@ -67,16 +67,55 @@ nozzle_cleaning_length: (23 - [filament_unload_after_cutting]). If this does not
                         calibration.
 filament_unload_into_tube: Depends on 4-in-1-adapter version. Set it so that the
                            filament when unloaded, sits just barely outside of
-                           the adapter. Or use the calibration test. NOTE: If
-                           using an 8-way setup involving 2-way adapters on the
-                           stock tubes, make sure to use two IFS channels that
-                           share a 2-way adapter.
+                           the adapter. Or use the calibration.
                            
 ** In filament.json, filament-specific **  (All versions)
 filament_ifs_speed: Determine via the QS_IFS_CALIBRATION_SPEED macro.
 filament_extruder_speed: Determine max volumetric flow via slicer calibration
                          tests, then multiply by 24.95 and round to the nearest
                          integer (or nearest "nice" number if you prefer).
+                         
+
+                         
+Calibrations:
+
+To avoid any stretching from heat creep that may interfere with results, it is
+recommended to perform these calibrations with your chamber at room temperature
+(if your printer is enclosed).
+
+QuickSwap does NOT automatically save any results. It will output the suggested
+values to the console, which you can then manually enter into filament.json.
+
+IFS speed calibration - This calibration is used to determine how fast you can
+load and unload filament with the IFS, without significant loss of positional
+accuracy. This test should be performed for each filament type. The default
+parameters (aside from selecting a channel) should suffice for rigid filaments,
+unless you wanted to experiment with a higher maximum. For flexible filaments,
+a lower starting speed and step is advised. When performing this test, the
+channel being used should have filament loaded in the IFS, but the extruder
+should not be loaded (with any channel).
+  Calibrated setting: filament_ifs_speed
+
+Combined unload calibration - This calibration is used to determine the unload
+distance using the extruder + IFS together, after cutting filament. The default
+parameters should suffice. Before running this calibration, load a filament into
+the print head. This test should be performed with a rigid filament (not TPU),
+and does not need to be re-tested for different filament types.
+  Calibrated setting: nozzle_cleaning_length
+         Side effect: An increase to filament_unload_into_tube may be necessary,
+                      however, this setting has its own calibration as well.
+                      
+Tube unload calibration - This calibration is used to determine the unload
+distance using the IFS alone, after unloading from the extruder. The default
+parameters should suffice for a stock 4-way, but higher values may be needed for
+custom setups. This test will use the first two loaded channels of the IFS. The
+two channels should contain rigid, non-abrasive filaments; and the extruder
+should not be loaded. After running the initial test, a new set of parameters
+will be suggested, and the test should be run again with these. It is also
+recommended to add a small amount of tolerance (3-5mm) to the final result. This
+test does not need to be redone for different filament types.
+  Calibrated setting: filament_unload_into_tube
+
 
 
 
