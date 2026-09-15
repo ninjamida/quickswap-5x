@@ -18,6 +18,8 @@ primary_branch: master
 
 WARNINGS:
 - Latest version is not tested with Nopoop (older versions have been)
+- You must reboot the printer (REBOOT macro or power cycle) after updating the
+  QuickSwap plugin.
 - Only tested with Klipper 12
 - Use at your own risk
 
@@ -62,16 +64,61 @@ next_cmd_delay: 0.02
 
 ** In filament.json, defaults **  (All versions)
 filament_unload_before_cutting: 20
-nozzle_cleaning_length: (25 - [filament_unload_after_cutting])
+nozzle_cleaning_length: (23 - [filament_unload_after_cutting]). If this does not
+                        give good results, try using the IFS combined unload
+                        calibration.
 filament_unload_into_tube: Depends on 4-in-1-adapter version. Set it so that the
                            filament when unloaded, sits just barely outside of
-                           the adapter. Calibration test coming soon.
+                           the adapter. Or use the calibration.
                            
 ** In filament.json, filament-specific **  (All versions)
 filament_ifs_speed: Determine via the QS_IFS_CALIBRATION_SPEED macro.
 filament_extruder_speed: Determine max volumetric flow via slicer calibration
                          tests, then multiply by 24.95 and round to the nearest
                          integer (or nearest "nice" number if you prefer).
+                         
+
+                         
+Calibrations:
+
+To avoid any stretching from heat creep that may interfere with results, it is
+recommended to perform these calibrations with your chamber at room temperature
+(if your printer is enclosed).
+
+QuickSwap does NOT automatically save any results. It will output the suggested
+values to the console, which you can then manually enter into filament.json.
+
+IFS speed calibration - This calibration is used to determine how fast you can
+load and unload filament with the IFS, without significant loss of positional
+accuracy. This test should be performed for each filament type. The default
+parameters (aside from selecting a channel) should suffice for rigid filaments,
+unless you wanted to experiment with a higher maximum. For flexible filaments,
+a lower starting speed and step is advised. When performing this test, the
+channel being used should have filament loaded in the IFS, but the extruder
+should not be loaded (with any channel).
+  Calibrated setting: filament_ifs_speed
+
+Combined unload calibration - This calibration is used to determine the unload
+distance using the extruder + IFS together, after cutting filament. The default
+parameters should suffice. Before running this calibration, load a filament into
+the print head. This test should be performed with a rigid filament (not TPU),
+and does not need to be re-tested for different filament types.
+  Calibrated setting: nozzle_cleaning_length
+         Side effect: An increase to filament_unload_into_tube may be necessary,
+                      however, this setting has its own calibration as well.
+                      
+Tube unload calibration - This calibration is used to determine the unload
+distance using the IFS alone, after unloading from the extruder. Make sure to
+perform the other two calibrations first. The default parameters should suffice
+for a stock 4-way, but higher values may be needed for custom setups. This test
+will use the first two loaded channels of the IFS. The two channels should
+contain rigid, non-abrasive filaments; and the extruder should not be loaded.
+After running the initial test, a new set of parameters will be suggested, and
+the test should be run again with these. It is also recommended to add a small
+amount of tolerance (3-5mm) to the final result. This test does not need to be
+redone for different filament types.
+  Calibrated setting: filament_unload_into_tube
+
 
 
 
@@ -79,22 +126,35 @@ Settings:
 Add in user.cfg if you want to customize these. Default values shown below.
 
 [quickswap]
-silent: 0                   # Change to 1 to hide most output text, or 2 to hide
-                            # all output text except for errors.
-purge_step_length: 15       # When purging a near-empty filament, purges this
-                            # length between "is that everything?" checks.
-purge_finish_length: 15     # When purging a near-empty filament, purges this
-                            # length more after the head sensor reports empty.
-ifs_flag_delay: 1.0         # Time after sending an async IFS command, before
-                            # the command is assumed to have been received. No
-                            # point setting it lower as the command won't
-                            # physically complete fast enough for that to make a
-                            # difference; but you may need to set it higher on
-                            # Z-Mod 1.7.3-78 or below.
+silent: 0  # Change to 1 to hide most output text, or 2 to hide all output text
+           # except for errors.
+           
+purge_step_length: 15  # When purging a near-empty filament, purges this length
+                       # between "is that everything?" checks.
+                            
+purge_finish_length: 15  # When purging a near-empty filament, purges this
+                         # length more after the head sensor reports empty.
+                            
+ifs_flag_delay: 1.0  # Time after sending an async IFS command, before the
+                     # command is assumed to have been received. No point
+                     # setting it lower as the command won't physically complete
+                     # fast enough for that to make a difference; but you may
+                     # need to set it higher on Z-Mod 1.7.3-78 or below.
+                            
 insert_base_distance: 15.0  # Base length to insert filament into the extruder,
                             # before filament_unload_before_cutting adjustment
                             # is applied. Only needs to be "perfect" if using
                             # nopoop.
+                            
+slow_after_unload_length: True  # If True, when loading filament, the filament
+                                # will load at filament_ifs_speed only for a
+                                # length of filament_unload_into_tube, after
+                                # which any remaining load will be reduced to
+                                # filament_extruder_speed. This allows faster
+                                # filament_ifs_speed values without the risk of
+                                # grinding or jamming the filament, at the cost
+                                # of very slightly slower load speeds (which are
+                                # generally offset by the higher speeds).
 
 
 
