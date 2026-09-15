@@ -49,6 +49,7 @@ class QuickSwap:
 
         # Calibration commands
         self.gcode.register_command('_QS_IFS_CALIBRATION_SPEED', self.cmd_QS_IFS_CALIBRATION_SPEED)
+        self.gcode.register_command('_QS_IFS_CALIBRATION_COMBINED_UNLOAD', self.cmd_QS_IFS_CALIBRATION_COMBINED_UNLOAD)
 
         self.ifs_flag_time = time.monotonic() - self.ifs_flag_delay
         self.ifs_async_expected_responses = []
@@ -801,7 +802,69 @@ class QuickSwap:
             self.gcode.respond_raw('Withdrawal succeeded at maximum test speed')
         elif result_insert > max_speed:
             self.gcode.respond_raw('Insert succeeded at maximum test speed')
+            
+    def cmd_QS_IFS_CALIBRATION_COMBINED_UNLOAD(self, gcmd):
+        if not self.zmod_ifs.get_extruder_sensor():
+            self.gcode.respond_raw('FAILED: Please load filament and try again.')
+            return
+        channel = self.zmod_ifs.get_current_channel_from_config()
+        filament_info = self.zmod_ifs.get_prutok_config(channel)
+        
+        step = gcmd.get_int('STEP', 1)
+        initial = gcmd.get_int('INITIAL', 14)
+        max = gcmd.get_int('MAX', 25)
+        
+        slow_speed = min(filament_info['filament_extruder_speed'], 150)
+        
+        self.gcode.respond_raw('Preparing')
+        self.gcode.run_script_from_command("_DISABLE_SENSOR")
+        self.gcode.run_script_from_command("_G28")
+        self.gcode.run_script_from_command("G90\nM83")
+        
+        self.gcode.respond_raw('Cutting filament')
+        self.gcode.run_script_from_command(f"_QS_IFS_ASYNC_COMMAND COMMAND='F24 C{channel}' RESPONSE='F24 ok. chan {channel}.'")
+        self.gcode.run_script_from_command(f"G1 X{self.cut_prepare_x} Y0 F{self.travel_move_speed}")
+        self.gcode.run_script_from_command(f"G1 Y{self.cut_prepare_y} F{self.cut_prepare_y_travel_move_speed}")
+        self.gcode.run_script_from_command(f"G1 X{self.cut_x} F{self.cut_move_speed}")
+        self.gcode.run_script_from_command(f"G1 E-1 F{filament_info['filament_extruder_speed'] * 2}")
+        self.gcode.run_script_from_command(f"G1 X{self.cut_prepare_x} F{self.cut_move_speed}")
+        self.gcode.run_script_from_command(f"G1 Y0 F{self.travel_move_speed}")
+        self.gcode.run_script_from_command("_GOTO_TRASH")
+        self.gcode.run_script_from_command("_QS_WAIT_IFS_IDLE")
+        
+        self.gcode.respond_raw(f'Withdrawing {initial}mm')
+        self.gcode.run_script_from_command(f"G1 E-{initial - 1} F{filament_info['filament_extruder_speed']}")
+        self.gcode.run_script_from_command(f"IFS_F11 PRUTOK={channel} LEN={initial - 1} SPEED={filament_info['filament_extruder_speed']}")
+        
+        if not self.zmod_ifs.get_extruder_sensor():
+            self.gcode.respond_raw(f'FAILED: Filament already past head sensor at {initial}mm withdraw. Try again with a lower initial value.')
+            self.gcode.run_script_from_command('IFS_F18')
+            return
+            
+        self.gcode.respond_raw(f'Calibrating combined withdraw distance')
+        extra_len = 0
+        while self.zmod_ifs.get_extruder_sensor():
+            if extra_len >= (max - initial):
+                self.gcode.respond_raw(f'FAILED: Filament still in head sensor after {max}mm withdraw. Try again with a higher max value.')
+                self.gcode.run_script_from_command('IFS_F18')
+                return
+            self.gcode.run_script_from_command(f"G1 E-1 F{slow_speed}")
+            self.gcode.run_script_from_command(f"IFS_F11 PRUTOK={channel} LEN=1 SPEED={slow_speed}")
+            extra_len += 1
+            time.sleep(0.6)
 
-
+        old_unload_after_cut = filament_info['filament_unload_after_cutting']
+        old_nozzle_cleaning = filament_info['nozzle_cleaning_length']
+        old_tube = filament_info['filament_unload_into_tube']
+        
+        new_nozzle_cleaning = (initial + extra_len - 1) - old_unload_after_cut
+        new_tube = (old_nozzle_cleaning + old_tube) - new_nozzle_cleaning
+        
+        self.gcode.respond_raw(f'Combined unload calibration complete')
+        self.gcode.respond_raw(f'Recommended nozzle_cleaning_length: {new_nozzle_cleaning} mm')
+        self.gcode.respond_raw(f'Recommended filament_unload_into_tube: {new_tube} mm')
+        self.gcode.run_script_from_command(f"IFS_F11 PRUTOK={channel} LEN={new_tube} SPEED={filament_info['filament_ifs_speed']}")
+        self.gcode.run_script_from_command('IFS_F18\n_ENABLE_SENSOR')
+        
 def load_config(config):
     return QuickSwap(config)
