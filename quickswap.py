@@ -1011,7 +1011,7 @@ class QuickSwap:
                     self.gcode.respond_raw(f'Initial: {this_distance - step + 1}')
                     self.gcode.respond_raw(f'Max: {this_distance + 1}')
                     self.gcode.respond_raw(f'Step: 1')
-                self.gcode.run_script_from_command(f'IFS_F11 PRUTOK={chan2} LEN={this_distance} SPEED={filament_info2["filament_ifs_speed"]}')
+            self.gcode.run_script_from_command(f'IFS_F11 PRUTOK={chan2} LEN={this_distance} SPEED={filament_info2["filament_ifs_speed"]}')
 
         self.gcode.run_script_from_command('IFS_F18\n_ENABLE_SENSOR')
 
