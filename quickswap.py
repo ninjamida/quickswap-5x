@@ -84,15 +84,23 @@ class QuickSwap:
 
         self.x_center = (self.x_left + self.x_right) / 2
         self.y_center = (self.y_front + self.y_back) / 2
+        
+        self.enable = True
 
     def _handle_ready(self):
-        self.zmod_ifs = self.printer.lookup_object('zmod_ifs')
-        self.save_variables = self.printer.lookup_object('save_variables')
-        self.print_stats = self.printer.lookup_object('print_stats')
-        self.toolhead = self.printer.lookup_object('toolhead')
-        self._set_vars()
-        self._rename_macro('_A_CHANGE_FILAMENT', '_QS_ORIG_A_CHANGE_FILAMENT')
-        self._rename_macro('_QS_A_CHANGE_FILAMENT', '_A_CHANGE_FILAMENT')
+        zmod_color = self.printer.lookup_object('zmod_color')
+        if zmod_color.display:
+            self.enable = False
+            self.gcode.respond_raw(f'QuickSwap: Native screen detected. QuickSwap functionality disabled.')
+        else:
+            self.zmod_ifs = self.printer.lookup_object('zmod_ifs')
+            self.save_variables = self.printer.lookup_object('save_variables')
+            self.print_stats = self.printer.lookup_object('print_stats')
+            self.toolhead = self.printer.lookup_object('toolhead')
+            self._set_vars()
+            self._rename_macro('_A_CHANGE_FILAMENT', '_QS_ORIG_A_CHANGE_FILAMENT')
+            self._rename_macro('_QS_A_CHANGE_FILAMENT', '_A_CHANGE_FILAMENT')
+            self.enable = True
 
     def _set_vars(self):
         eventtime = self.reactor.monotonic()
@@ -260,6 +268,8 @@ class QuickSwap:
 
     def cmd_QS_CHANGE_FILAMENT(self, gcmd):
         try:
+            if not self.enable:
+                raise self.gcode.error("QuickSwap filament change was called with native screen")
             self._set_vars()
             cmds = []
             channel = gcmd.get_int('CHANNEL', 0)
@@ -725,6 +735,10 @@ class QuickSwap:
 
     def cmd_QS_IFS_CALIBRATION_SPEED(self, gcmd):
         self.gcode.run_script_from_command('RESPOND TYPE=command MSG="action:prompt_end"')
+        if not self.enable:
+            self.gcode.respond_raw('FAILED: Please disable native screen and try again.')
+            return
+        
         self.gcode.run_script_from_command('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=1')
 
         channel = gcmd.get_int('CHANNEL')
@@ -823,6 +837,9 @@ class QuickSwap:
 
     def cmd_QS_IFS_CALIBRATION_COMBINED_UNLOAD(self, gcmd):
         self.gcode.run_script_from_command('RESPOND TYPE=command MSG="action:prompt_end"')
+        if not self.enable:
+            self.gcode.respond_raw('FAILED: Please disable native screen and try again.')
+            return
 
         if not self.zmod_ifs.get_extruder_sensor():
             self.gcode.respond_raw('FAILED: Please load filament and try again.')
@@ -889,6 +906,10 @@ class QuickSwap:
 
     def cmd_QS_IFS_CALIBRATION_TUBE_UNLOAD(self, gcmd):
         self.gcode.run_script_from_command('RESPOND TYPE=command MSG="action:prompt_end"')
+        if not self.enable:
+            self.gcode.respond_raw('FAILED: Please disable native screen and try again.')
+            return
+            
         self.gcode.run_script_from_command('_DISABLE_SENSOR')
         self.gcode.run_script_from_command('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=1')
 
