@@ -763,6 +763,7 @@ class QuickSwap:
             self.gcode.respond_raw(f'FAILED: Please load IFS channel {channel} and try again.')
             return
 
+        self.gcode.run_script_from_command("_DISABLE_SENSOR")
         self.gcode.respond_raw('Inserting filament')
         self.gcode.run_script_from_command(f"IFS_F24 PRUTOK={channel}")
         self.gcode.run_script_from_command(f"IFS_F23 PRUTOK={channel}")
@@ -770,17 +771,20 @@ class QuickSwap:
 
         if not self.zmod_ifs.get_extruder_sensor():
             self.gcode.respond_raw('FAILED: Filament not detected in print head after insertion.')
+            self.gcode.run_script_from_command('IFS_F18\n_ENABLE_SENSOR')
             return
 
         if tube_flex >= 0:
             if self._qs_move_to_sensor(channel, slow_speed, tolerance, tube_flex, 'Verifying filament positioning') > tolerance:
                 self.gcode.respond_raw(f"FAILED: More than {reinsert_steps}mm reinsertion was needed. Try adjusting tube flex length or increasing tolerance.")
+                self.gcode.run_script_from_command('IFS_F18\n_ENABLE_SENSOR')
                 return
         else:
             max_autodetect_steps = 15
             move_steps = self._qs_move_to_sensor(channel, slow_speed, max_autodetect_steps, -1, 'Determining tube flex length')
             if move_steps > max_autodetect_steps:
                 self.gcode.respond_raw(f"FAILED: Filament not detected after {max_autodetect_steps} steps.")
+                self.gcode.run_script_from_command('IFS_F18\n_ENABLE_SENSOR')
                 return
             tube_flex = move_steps - 1
             self.gcode.respond_raw(f"Tube flex length detected: {tube_flex}mm")
@@ -810,6 +814,7 @@ class QuickSwap:
                     self.gcode.run_script_from_command(f"IFS_F10 PRUTOK={channel} LEN={filament_info['filament_tube_length']} SPEED={min_speed} CHECK=1\nM400")
                     if self._qs_move_to_sensor_forward(channel, slow_speed, max_insert_steps, 'Repositioning filament') > max_insert_steps:
                         self.gcode.respond_raw("FAILED: Unable to reposition filament position")
+                        self.gcode.run_script_from_command('IFS_F18\n_ENABLE_SENSOR')
                         return
                 elif insert_step_count > tolerance * 2: # In case the "first over the limit" iteration activated the sensor
                     result_insert = last_speed
@@ -834,6 +839,7 @@ class QuickSwap:
             self.gcode.respond_raw('Withdrawal succeeded at maximum test speed')
         elif result_insert > max_speed:
             self.gcode.respond_raw('Insert succeeded at maximum test speed')
+        self.gcode.run_script_from_command('IFS_F18\n_ENABLE_SENSOR')
 
     def cmd_QS_IFS_CALIBRATION_COMBINED_UNLOAD(self, gcmd):
         self.gcode.run_script_from_command('RESPOND TYPE=command MSG="action:prompt_end"')

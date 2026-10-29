@@ -110,6 +110,8 @@ Parameters:
 
 Upon completing the calibration, new values will be suggested for both `nozzle_cleaning_length` and `filament_unload_into_tube`. This is calculated so that any reduction in `nozzle_cleaning_length` is offset by a corresponding increase in `filament_unload_into_tube`, in order to maintain the same total withdraw distance. The suggested value for `nozzle_cleaning_length` will take into account any `filament_unload_after_cutting` you have set; you do not need to manually adjust for that.
 
+**To avoid doubt:** The `filament_unload_into_tube` suggested by this test is *NOT* a fully calibrated value. This test purely calibrates `nozzle_cleaning_length`. The suggested value it gives for `filament_unload_into_tube` is a temporary one that, when used together with the (calibrated) `nozzle_cleaning_length`, will preserve your existing *total* unload distance. The `filament_unload_into_tube` suggested by this will work, but it will not be optimized. The following calibration will actually determine your `filament_unload_into_tube`.
+
 ### Tube unload calibration (`filament_unload_into_tube`)
 **This test only needs to be performed once, and will cover all filament types. It will need to be redone if you switch from the older 4-in-1 adapter to the newer one or vice versa, or add or modify a custom filament splitter setup.**
 
