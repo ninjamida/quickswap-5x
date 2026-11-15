@@ -54,6 +54,9 @@ class QuickSwap:
         self.gcode.register_command('_QS_IFS_CALIBRATION_SPEED', self.cmd_QS_IFS_CALIBRATION_SPEED)
         self.gcode.register_command('_QS_IFS_CALIBRATION_COMBINED_UNLOAD', self.cmd_QS_IFS_CALIBRATION_COMBINED_UNLOAD)
         self.gcode.register_command('_QS_IFS_CALIBRATION_TUBE_UNLOAD', self.cmd_QS_IFS_CALIBRATION_TUBE_UNLOAD)
+        
+        # Misc commands
+        self.gcode.register_command('_QS_PREPARE_CHANNELS', self.cmd_QS_PREPARE_CHANNELS)
 
         self.ifs_flag_time = time.monotonic() - self.ifs_flag_delay
         self.ifs_async_expected_responses = []
@@ -1021,6 +1024,58 @@ class QuickSwap:
 
         self.gcode.run_script_from_command('IFS_F18\n_ENABLE_SENSOR')
 
+# =============================================================================
+# MISC FUNCTIONS
+# =============================================================================
+    def cmd_QS_PREPARE_CHANNELS(self, gcmd):
+        self.gcode.run_script_from_command('RESPOND TYPE=command MSG="action:prompt_end"')
+        if not self.enable:
+            self.gcode.respond_raw('FAILED: Please disable native screen and try again.')
+            return
+            
+        if self.zmod_ifs.get_extruder_sensor():
+            self.gcode.respond_raw('FAILED: Prepare channels cannot be used while a filament is loaded in the extruder.')
+            return
+            
+        try:
+            self.gcode.run_script_from_command('_DISABLE_SENSOR')
+                
+            color_limit = self.zmod_ifs.color_limit
+            for i in range(1, color_limit+1):
+                if self.zmod_ifs.ifs_data.get_port(i):
+                    filament_info = self.zmod_ifs.get_prutok_config(i)
+                    slow_speed = min(filament_info['filament_extruder_speed'], 150)
+                    
+                    self.gcode.run_script_from_command(f'IFS_F24 PRUTOK={i}')
+                    self.gcode.run_script_from_command(f'IFS_F23 PRUTOK={i}')
+                    
+                    self.gcode.run_script_from_command(f"IFS_F10 PRUTOK={i} LEN={filament_info['filament_tube_length']} SPEED={filament_info['filament_ifs_speed']} WAIT=0")
+                    try:
+                        time.sleep(0.3)
+                        timeout = time.monotonic() + 120
+                        while self.zmod_ifs.ifs_data.State != IFS_IDLE_STATE_VALUE and time.monotonic() < timeout:
+                            if self.zmod_ifs.get_extruder_sensor():
+                                self.gcode.run_script_from_command('IFS_F112')
+                                break
+                            elif not self.zmod_ifs.ifs_data.get_stall(i):
+                                time.sleep(0.3)
+                                if not self.zmod_ifs.ifs_data.get_stall(i) and not self.zmod_ifs.get_extruder_sensor():
+                                    raise self.printer.command_error(f'Stall on channel {i}')
+                            time.sleep(0.1)
+                    except Exception as e:
+                        self.gcode.run_script_from_command('IFS_F112')
+                        raise
+                    
+                    if not self.zmod_ifs.get_extruder_sensor():
+                        raise self.printer.command_error(f'Insert failed on channel {i}')
+                    
+                    while self.zmod_ifs.get_extruder_sensor():
+                        self.gcode.run_script_from_command(f"IFS_F11 PRUTOK={i} LEN=1 SPEED={slow_speed}")
+                        time.sleep(0.6)
+                        
+                    self.gcode.run_script_from_command(f"IFS_F11 PRUTOK={i} LEN={filament_info['filament_unload_into_tube']} SPEED={filament_info['filament_ifs_speed']}")
+        finally:
+            self.gcode.run_script_from_command('IFS_F18\n_ENABLE_SENSOR')                                  
 
 
 def load_config(config):

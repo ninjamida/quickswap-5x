@@ -140,6 +140,11 @@ When the first run is complete, the results will include suggested parameter val
 
 I recommend not using the calculated value directly, but rather adding a small margin of error to it, on the order of 3 to 5 mm. Some custom multi-way adapters may benefit from a larger margin of error.
 
+## Utility macros
+
+### QS_PREPARE_CHANNELS
+This macro will move all loaded filaments to the position that a QuickSwap filament change would withdraw them to. This can be useful if using the *slow_after_unload_length* setting, especially if the printer would otherwise be sitting idle waiting for something (eg. heat soak) during the time it could be doing this.
+
 ## Print speed comparisons
 These test runs were performed on a relatively early version of QuickSwap (0.1.0), without performing the calibrations, instead just using my pre-existing filament.json values. Recommended settings that did not rely on calibrations (eg. `filament_unload_before_cutting`, `[zmod_ifs] -> next_cmd_delay`) were applied.
 
