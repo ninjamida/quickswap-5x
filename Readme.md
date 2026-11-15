@@ -110,6 +110,8 @@ Parameters:
 
 Upon completing the calibration, new values will be suggested for both `nozzle_cleaning_length` and `filament_unload_into_tube`. This is calculated so that any reduction in `nozzle_cleaning_length` is offset by a corresponding increase in `filament_unload_into_tube`, in order to maintain the same total withdraw distance. The suggested value for `nozzle_cleaning_length` will take into account any `filament_unload_after_cutting` you have set; you do not need to manually adjust for that.
 
+**To avoid doubt:** The `filament_unload_into_tube` suggested by this test is *NOT* a fully calibrated value. This test purely calibrates `nozzle_cleaning_length`. The suggested value it gives for `filament_unload_into_tube` is a temporary one that, when used together with the (calibrated) `nozzle_cleaning_length`, will preserve your existing *total* unload distance. The `filament_unload_into_tube` suggested by this will work, but it will not be optimized. The following calibration will actually determine your `filament_unload_into_tube`.
+
 ### Tube unload calibration (`filament_unload_into_tube`)
 **This test only needs to be performed once, and will cover all filament types. It will need to be redone if you switch from the older 4-in-1 adapter to the newer one or vice versa, or add or modify a custom filament splitter setup.**
 
@@ -137,6 +139,11 @@ This test will generally be run twice. On the first run, use the default `step` 
 When the first run is complete, the results will include suggested parameter values for a second test run.
 
 I recommend not using the calculated value directly, but rather adding a small margin of error to it, on the order of 3 to 5 mm. Some custom multi-way adapters may benefit from a larger margin of error.
+
+## Utility macros
+
+### QS_PREPARE_CHANNELS
+This macro will move all loaded filaments to the position that a QuickSwap filament change would withdraw them to. This can be useful if using the *slow_after_unload_length* setting, especially if the printer would otherwise be sitting idle waiting for something (eg. heat soak) during the time it could be doing this.
 
 ## Print speed comparisons
 These test runs were performed on a relatively early version of QuickSwap (0.1.0), without performing the calibrations, instead just using my pre-existing filament.json values. Recommended settings that did not rely on calibrations (eg. `filament_unload_before_cutting`, `[zmod_ifs] -> next_cmd_delay`) were applied.
